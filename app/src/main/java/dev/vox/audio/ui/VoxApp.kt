@@ -27,7 +27,7 @@ private val tabs = listOf(Tab("Home", Icons.Rounded.Home), Tab("Search", Icons.R
 fun VoxApp(vm: VM) {
     val w = LocalConfiguration.current.screenWidthDp
     val rail = w >= 600
-    val twoPane = w >= 640          // Fold unfolded: list + detail side by side
+    val twoPane = w >= 600          // Fold unfolded: list + detail side by side
     val reading = vm.reading
     val player = vm.playerOpen
     var tab by rememberSaveable { mutableIntStateOf(0) }
@@ -112,15 +112,13 @@ private fun Content(vm: VM, tab: Int, twoPane: Boolean, onRead: (String) -> Unit
     val list: @Composable () -> Unit = {
         when (tab) { 0 -> HomeScreen(vm) { vm.open(it) }; 1 -> SearchScreen(vm) { vm.open(it) }; else -> MyListScreen(vm) { vm.open(it) } }
     }
-    if (twoPane) Row(Modifier.fillMaxSize()) {
-        Box(Modifier.weight(1.1f)) { list() }
-        VerticalDivider()
-        Box(Modifier.weight(1f)) {
-            val fallback = vm.nowBook ?: vm.continueList.firstOrNull { it.addonId != "ebook" }
-            if (detail != null) DetailScreen(vm, detail, null)
-            else if (fallback != null) DetailScreen(vm, fallback, null)
-            else Box(Modifier.fillMaxSize(), Alignment.Center) {
-                Text("Pick an audiobook", color = MaterialTheme.colorScheme.onSurfaceVariant)
+    if (twoPane) {
+        // wide screens: full-width browsing, and a book opens as a centred modal card (like Netflix's title sheet)
+        list()
+        if (detail != null) androidx.compose.ui.window.Dialog({ vm.closeDetail() }, androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
+            Surface(shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface,
+                modifier = Modifier.widthIn(max = 860.dp).fillMaxWidth(.92f).fillMaxHeight(.92f)) {
+                Box { DetailScreen(vm, detail) { vm.closeDetail() } }
             }
         }
     } else androidx.compose.animation.AnimatedContent(detail, transitionSpec = {

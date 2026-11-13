@@ -65,6 +65,7 @@ fun HomeScreen(vm: VM, onOpen: (Book) -> Unit) {
 @Composable
 private fun Hero(vm: VM, b: Book?, height: androidx.compose.ui.unit.Dp, onOpen: (Book) -> Unit) {
     val bg = MaterialTheme.colorScheme.background
+    if (androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 600 && b != null) { WideHero(vm, b, height, onOpen); return }
     Box(Modifier.fillMaxWidth().height(height)) {
         if (b?.cover != null) AsyncImage(b.cover, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop, alpha = .75f)
         Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0xAA000000), Color.Transparent, bg))))
@@ -92,7 +93,10 @@ private fun Hero(vm: VM, b: Book?, height: androidx.compose.ui.unit.Dp, onOpen: 
 }
 
 @Composable
-private fun cardWidth() = if (androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 840) 180.dp else 150.dp
+private fun cardWidth() = if (androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 600) 190.dp else 150.dp
+
+@Composable
+private fun gridCell() = if (androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 600) 170.dp else 130.dp
 
 @Composable
 private fun UpdateBanner(vm: VM) {
@@ -187,7 +191,7 @@ fun SearchScreen(vm: VM, onOpen: (Book) -> Unit) {
             }
             vm.searching && nothing -> Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator(color = VoxRed) }
             vm.query.isNotBlank() && !vm.searching && nothing -> Box(Modifier.fillMaxSize(), Alignment.Center) { Text("No results", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-            else -> LazyVerticalGrid(GridCells.Adaptive(130.dp), contentPadding = PaddingValues(12.dp, 12.dp, 12.dp, 24.dp),
+            else -> LazyVerticalGrid(GridCells.Adaptive(gridCell()), contentPadding = PaddingValues(12.dp, 12.dp, 12.dp, 24.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (showBooksHome) {
                     item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) { Text("Your books", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(4.dp, 4.dp, 4.dp, 0.dp)) }
@@ -230,7 +234,7 @@ fun MyListScreen(vm: VM, onOpen: (Book) -> Unit) {
         if (items.isEmpty()) Box(Modifier.fillMaxSize().padding(32.dp), Alignment.Center) {
             Text(when (tab) { 0 -> "Add books with the + button."; 1 -> "Books you listen to show up here."; else -> "Books you finish show up here." },
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
-        } else LazyVerticalGrid(GridCells.Adaptive(130.dp), contentPadding = PaddingValues(12.dp, 12.dp, 12.dp, 24.dp),
+        } else LazyVerticalGrid(GridCells.Adaptive(gridCell()), contentPadding = PaddingValues(12.dp, 12.dp, 12.dp, 24.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(items, key = { it.key }) { b ->
                 Box {
@@ -545,7 +549,7 @@ private fun Greeting(vm: VM) {
 @Composable
 private fun FeaturedCard(vm: VM, f: dev.vox.audio.data.Featured, onOpen: (Book) -> Unit) {
     Surface(shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .45f),
-        modifier = Modifier.padding(16.dp, 14.dp, 16.dp, 0.dp).fillMaxWidth().clickable { onOpen(f.book) }) {
+        modifier = Modifier.padding(16.dp, 14.dp, 16.dp, 0.dp).fillMaxWidth().widthIn(max = 900.dp).clickable { onOpen(f.book) }) {
         Row(Modifier.padding(12.dp)) {
             Cover(f.book.cover, Modifier.size(112.dp), 12.dp)
             Column(Modifier.padding(start = 14.dp).weight(1f).heightIn(min = 112.dp), verticalArrangement = Arrangement.SpaceBetween) {
@@ -579,6 +583,50 @@ private fun DiscoverShelf(sh: dev.vox.audio.data.Shelf, onOpen: (Book) -> Unit) 
             items(4) { Box(Modifier.width(cardW).aspectRatio(1f).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .4f))) }
         } else LazyRow(contentPadding = PaddingValues(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             items(sh.books, key = { sh.id + it.key }) { BookCard(it, Modifier.width(cardW)) { onOpen(it) } }
+        }
+    }
+}
+
+/** Netflix-style billboard for wide screens: copy on the left, artwork bleeding in from the right, fading into the page. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun WideHero(vm: VM, b: Book, height: androidx.compose.ui.unit.Dp, onOpen: (Book) -> Unit) {
+    val bg = MaterialTheme.colorScheme.background
+    val blurb = dev.vox.audio.data.Discover.blurbOf(b) ?: b.description.takeIf { it.isNotBlank() }
+    val wdp = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp
+    val big = wdp >= 900
+    val titleSp = if (big) 44.sp else 32.sp
+    Box(Modifier.fillMaxWidth().height(if (big) height + 40.dp else height - 20.dp)) {
+        if (b.cover != null) {
+            AsyncImage(b.cover, null, Modifier.align(Alignment.CenterEnd).fillMaxWidth(.64f).fillMaxHeight(), contentScale = ContentScale.Crop, alpha = .95f)
+        }
+        Box(Modifier.fillMaxSize().background(Brush.horizontalGradient(0f to bg, .38f to bg, .68f to bg.copy(alpha = .35f), 1f to Color.Transparent)))
+        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0.55f to Color.Transparent, 1f to bg)))
+        Text("VOX", color = VoxRed, fontSize = 26.sp, fontWeight = FontWeight.Black, letterSpacing = 3.sp, modifier = Modifier.statusBarsPadding().padding(32.dp, 14.dp))
+        Column(Modifier.align(Alignment.CenterStart).fillMaxWidth(if (big) .46f else .54f).padding(start = 32.dp, top = 76.dp)) {
+            val label = vm.resumeLabel(b)
+            Text(if (label != null) "CONTINUE LISTENING" else "FEATURED", color = VoxRed, fontSize = 12.sp, fontWeight = FontWeight.Black, letterSpacing = 1.5.sp)
+            Spacer(Modifier.height(8.dp))
+            Text(displayTitle(b.title), fontSize = titleSp, lineHeight = titleSp * 1.08f, fontWeight = FontWeight.Black, maxLines = 3, overflow = TextOverflow.Ellipsis)
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (b.author.isNotBlank()) Text(b.author, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 16.sp)
+                if (b.totalSec > 0) Text(fmtDur(b.totalSec.toLong()), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 16.sp)
+                sourceBadge(b.addonId)?.let { Text(it, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.clip(RoundedCornerShape(4.dp)).background(VoxRed).padding(horizontal = 5.dp, vertical = 2.dp)) }
+            }
+            blurb?.let { Spacer(Modifier.height(10.dp)); Text(it, fontSize = 14.sp, lineHeight = 20.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurface.copy(alpha = .9f)) }
+            Spacer(Modifier.height(20.dp))
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button({ if (label != null) vm.resume(b) else onOpen(b) }, contentPadding = PaddingValues(horizontal = 22.dp, vertical = 10.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black)) {
+                    Icon(Icons.Rounded.PlayArrow, null, Modifier.size(24.dp)); Spacer(Modifier.width(4.dp))
+                    Text(if (label != null) "Resume" else "Play", fontWeight = FontWeight.Bold, fontSize = 16.sp, maxLines = 1)
+                }
+                FilledTonalButton({ onOpen(b) }, contentPadding = PaddingValues(horizontal = 18.dp, vertical = 10.dp), colors = ButtonDefaults.filledTonalButtonColors(containerColor = Color(0x66808080), contentColor = Color.White)) {
+                    Icon(Icons.Rounded.Info, null, Modifier.size(20.dp)); Spacer(Modifier.width(4.dp)); Text("More info", fontWeight = FontWeight.Bold, fontSize = 16.sp, maxLines = 1)
+                }
+                if (label != null) Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, modifier = Modifier.align(Alignment.CenterVertically))
+            }
         }
     }
 }
