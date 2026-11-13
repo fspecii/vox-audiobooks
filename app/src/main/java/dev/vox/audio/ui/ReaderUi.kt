@@ -40,6 +40,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 private class Theme(val paper: Color, val ink: Color, val sub: Color)
 private val themes = listOf(
@@ -100,11 +101,22 @@ fun BooksScreen(vm: VM, onRead: (String) -> Unit) {
         } else LazyVerticalGrid(GridCells.Adaptive(130.dp), contentPadding = PaddingValues(12.dp, 4.dp, 12.dp, 24.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(Ebooks.list, key = { it.id }) { b ->
+                val audio = remember(Converter.ready, Converter.bookId, b.id) { File(ctx.filesDir, "audiobooks/${b.id}/book.json").exists() }
                 Box {
-                    BookCard(dev.vox.audio.data.Book(b.id, "ebook", b.title, b.author, b.cover)) { onRead(b.id) }
+                    BookCard(dev.vox.audio.data.Book(b.id, if (audio) "ebook+audio" else "ebook", b.title, b.author, b.cover)) { onRead(b.id) }
                     IconButton({ menuFor = b }, Modifier.align(Alignment.TopEnd).size(32.dp)) { Icon(Icons.Rounded.MoreVert, "More", tint = Color.White) }
                     if (Converter.bookId == b.id) LinearProgressIndicator({ Converter.progress }, Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(4.dp), color = VoxRed)
                     DropdownMenu(menuFor?.id == b.id, { menuFor = null }) {
+                        if (audio) DropdownMenuItem({ Text("Listen to the audiobook") }, { menuFor = null; vm.playLocal(b.id); vm.playerOpen = true })
+                        if (!audio || Converter.bookId != b.id) DropdownMenuItem({ Text(if (audio) "Continue conversion" else "Convert to audiobook") }, {
+                            menuFor = null
+                            scope.launch {
+                                val eb = runCatching { Ebooks.load(b.id) }.getOrNull() ?: return@launch
+                                val vid = vm.voiceId.ifBlank { Voices.forLang(eb.lang).id }
+                                if (!Voices.installed(vid)) Voices.install(vid)
+                                if (Voices.installed(vid)) Converter.start(ctx, eb, vid) { vm.refreshLocal() }
+                            }
+                        })
                         DropdownMenuItem({ Text("Remove") }, { Ebooks.remove(b.id); menuFor = null; vm.refreshLocal() })
                     }
                 }
@@ -136,7 +148,7 @@ fun ReaderScreen(vm: VM, id: String, onClose: () -> Unit) {
     val curl = rememberCurlState(0)
     var followTarget by remember { mutableIntStateOf(-1) }
 
-    BackHandler { if (Narrator.state != Narrator.S.Idle && Narrator.bookId == id) Narrator.stop(); onClose() }
+    BackHandler(enabled = !vm.playerOpen) { if (Narrator.state != Narrator.S.Idle && Narrator.bookId == id) Narrator.stop(); onClose() }
     LaunchedEffect(id) { runCatching { Ebooks.load(id) }.fold({ book = it }, { error = it.message }) }
     LaunchedEffect(Unit) { delay(2500); chrome = false }
     DisposableEffect(themeIdx) {
@@ -166,22 +178,45 @@ fun ReaderScreen(vm: VM, id: String, onClose: () -> Unit) {
             val pg = paged
             if (pg == null) { CircularProgressIndicator(Modifier.align(Alignment.Center), color = VoxRed); return@BoxWithConstraints }
 
-            // remember where we are; a manual page turn while narrating restarts the voice from that page
+            val audioKey = "local|$id"
+            val converted = remember(Converter.ready, Converter.bookId, id) { File(ctx.filesDir, "audiobooks/$id/book.json").exists() }
+            val audioLoaded = vm.nowBook?.key == audioKey
+            // the sentence being spoken, from the converted audiobook (read along) or from live narration
+            val cursor by remember(pg, id) {
+                derivedStateOf<Pair<Int, IntRange>?> {
+                    if (vm.nowBook?.key == audioKey) {
+                        SyncMap.charAt(ctx, id, vm.chapter, vm.position, pg.plain.getOrNull(vm.chapter)?.length ?: 0, vm.duration)?.let { vm.chapter to it }
+                    } else if (Narrator.bookId == id && Narrator.state != Narrator.S.Idle) Narrator.cursor?.let { Narrator.chapter to it } else null
+                }
+            }
+            val ebookMeta = Ebooks.list.firstOrNull { it.id == id }
+
+            // remember where we are; turning the page while something is playing moves the voice / audiobook to that page
             LaunchedEffect(pg) {
                 snapshotFlow { curl.settled }.collect { i ->
                     val s = pg.pages.getOrNull(i * per) ?: return@collect
                     anchor = s.chapter to s.charStart
                     vm.store.setReadPos(id, s.chapter, s.charStart)
+                    ebookMeta?.let { vm.touchEbook(it, s.chapter, s.charStart, i.toFloat() / ((pg.pages.size + per - 1) / per).coerceAtLeast(1)) }
                     if (followTarget == i) followTarget = -1
                     else if (Narrator.bookId == id && Narrator.state != Narrator.S.Idle) startListen(ctx, vm, b, pg, s, scope)
+                    else if (vm.nowBook?.key == audioKey && vm.isPlaying) {
+                        val dur = (vm.nowBook?.chapters?.getOrNull(s.chapter)?.durationSec ?: 0) * 1000L
+                        vm.seekChapterMs(s.chapter, SyncMap.msAt(ctx, id, s.chapter, s.charStart, pg.plain.getOrNull(s.chapter)?.length ?: 0, dur))
+                    }
                 }
             }
-            // follow the voice with page turns
-            val cur = Narrator.cursor
-            LaunchedEffect(cur, Narrator.chapter) {
-                if (cur == null || Narrator.bookId != id || Narrator.state == Narrator.S.Idle) return@LaunchedEffect
-                val target = pg.pageOf(Narrator.chapter, cur.first) / per
+            // follow the voice / audiobook with page turns
+            LaunchedEffect(cursor) {
+                val c = cursor ?: return@LaunchedEffect
+                if (!(vm.isPlaying && audioLoaded) && !(Narrator.bookId == id && Narrator.state == Narrator.S.Playing)) return@LaunchedEffect
+                val target = pg.pageOf(c.first, c.second.first) / per
                 if (target != curl.settled && !curl.progress.isRunning) { followTarget = target; curl.curlY = 0.84f; curl.goTo(target) }
+            }
+            // the player asked to open the book at a given spot
+            LaunchedEffect(vm.readerJump, pg) {
+                val j = vm.readerJump ?: return@LaunchedEffect
+                curl.jump(pg.pageOf(j.first, j.second) / per); vm.readerJump = null
             }
 
             CurlPager(count = (pg.pages.size + per - 1) / per, state = curl, paper = th.paper, contentKey = Triple(textSp, themeIdx, serif to per), modifier = Modifier.fillMaxSize(),
@@ -196,7 +231,7 @@ fun ReaderScreen(vm: VM, id: String, onClose: () -> Unit) {
                     Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.Center) {
                         for (k in 0 until per) {
                             if (k == 1) Spacer(Modifier.width(gutter))
-                            PageView(b, pg, i * per + k, id, th, pageWdp, pageHdp, padTop, pg.pages.size)
+                            PageView(b, pg, i * per + k, th, pageWdp, pageHdp, padTop, pg.pages.size, cursor)
                         }
                     }
                     if (twoUp) Box(Modifier.align(Alignment.Center).width(1.dp).fillMaxHeight(0.7f).background(th.sub.copy(alpha = .3f)))
@@ -243,7 +278,28 @@ fun ReaderScreen(vm: VM, id: String, onClose: () -> Unit) {
                 }
                 Voices.error?.let { Surface(color = MaterialTheme.colorScheme.errorContainer) { Text(it, Modifier.padding(12.dp).fillMaxWidth(), fontSize = 13.sp) } }
                 Narrator.message?.let { Surface(color = MaterialTheme.colorScheme.errorContainer) { Text(it, Modifier.padding(12.dp).fillMaxWidth(), fontSize = 13.sp) } }
-                if (chrome || active) Row(Modifier.fillMaxWidth().background(th.ink.copy(alpha = .94f)).navigationBarsPadding().padding(horizontal = 8.dp, vertical = 4.dp),
+                val spec0 = pg.pages.getOrNull(curl.settled * per)
+                if (converted && (chrome || (audioLoaded && vm.isPlaying))) Row(Modifier.fillMaxWidth().background(th.ink.copy(alpha = .94f)).navigationBarsPadding().padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    FilledIconButton({
+                        if (audioLoaded) vm.togglePlay()
+                        else if (spec0 != null) {
+                            Narrator.stop()
+                            scope.launch { vm.playLocalAt(id, spec0.chapter, SyncMap.msAt(ctx, id, spec0.chapter, spec0.charStart, pg.plain.getOrNull(spec0.chapter)?.length ?: 0, 0)) }
+                        }
+                    }, colors = IconButtonDefaults.filledIconButtonColors(containerColor = VoxRed)) {
+                        Icon(if (audioLoaded && vm.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, "Listen", tint = Color.White)
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (audioLoaded) "Audiobook · read along" else "Listen to the audiobook", color = th.paper, modifier = Modifier.weight(1f), fontSize = 14.sp)
+                    var sm by remember { mutableStateOf(false) }
+                    Box {
+                        TextButton({ sm = true }) { Text("${vm.speed}x", color = th.paper) }
+                        DropdownMenu(sm, { sm = false }) { listOf(0.75f, 1f, 1.25f, 1.5f, 2f).forEach { sp -> DropdownMenuItem({ Text("${sp}x") }, { vm.changeSpeed(sp); sm = false }) } }
+                    }
+                    if (audioLoaded) IconButton({ vm.playerOpen = true }) { Icon(Icons.Rounded.Headphones, "Open player", tint = th.paper) }
+                }
+                else if (!converted && (chrome || active)) Row(Modifier.fillMaxWidth().background(th.ink.copy(alpha = .94f)).navigationBarsPadding().padding(horizontal = 8.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically) {
                     val spec = pg.pages.getOrNull(curl.settled * per)
                     FilledIconButton({
@@ -279,7 +335,7 @@ fun ReaderScreen(vm: VM, id: String, onClose: () -> Unit) {
             if (toc) AlertDialog({ toc = false }, confirmButton = { TextButton({ toc = false }) { Text("Close") } }, title = { Text("Contents") },
                 text = { LazyColumn { itemsIndexed(b.chapters) { ci, c ->
                     Text(c.title, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.fillMaxWidth().clickable {
-                        toc = false; scope.launch { curl.jump(pg.firstPage[ci]) }
+                        toc = false; scope.launch { curl.jump(pg.firstPage[ci] / per) }
                     }.padding(vertical = 10.dp))
                 } } })
             if (convertAsk) AlertDialog({ convertAsk = false },
@@ -307,8 +363,8 @@ private fun startListen(ctx: android.content.Context, vm: VM, b: EBook, pg: Page
 }
 
 @Composable
-private fun PageView(b: EBook, pg: Paged, idx: Int, id: String, th: Theme, w: androidx.compose.ui.unit.Dp, h: androidx.compose.ui.unit.Dp,
-                     padTop: androidx.compose.ui.unit.Dp, total: Int) {
+private fun PageView(b: EBook, pg: Paged, idx: Int, th: Theme, w: androidx.compose.ui.unit.Dp, h: androidx.compose.ui.unit.Dp,
+                     padTop: androidx.compose.ui.unit.Dp, total: Int, cursor: Pair<Int, IntRange>?) {
     Box(Modifier.width(w).fillMaxHeight()) {
         val spec = pg.pages.getOrNull(idx) ?: return@Box
         val hl = remember { Paint().apply { color = 0x55E50914; style = Paint.Style.FILL } }
@@ -316,9 +372,9 @@ private fun PageView(b: EBook, pg: Paged, idx: Int, id: String, th: Theme, w: an
             drawIntoCanvas { c ->
                 val nc = c.nativeCanvas
                 nc.save(); nc.clipRect(0f, 0f, size.width, spec.bottom - spec.top); nc.translate(0f, -spec.top)
-                val cr = Narrator.cursor
                 var path: Path? = null
-                if (cr != null && Narrator.chapter == spec.chapter && Narrator.bookId == id && Narrator.state != Narrator.S.Idle) {
+                if (cursor != null && cursor.first == spec.chapter) {
+                    val cr = cursor.second
                     val s = maxOf(cr.first, spec.charStart); val e = minOf(cr.last + 1, spec.charEnd)
                     if (s < e) path = Path().also { spec.layout.getSelectionPath(s, e, it) }
                 }

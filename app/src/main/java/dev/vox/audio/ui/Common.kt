@@ -32,6 +32,8 @@ fun sourceBadge(addonId: String): String? = when {
     addonId == "torrent" -> "TORRENT"
     addonId == "youtube" -> "YOUTUBE"
     addonId == "local" -> "AI VOICE"
+    addonId == "ebook" -> "BOOK"
+    addonId == "ebook+audio" -> "BOOK + AUDIO"
     else -> null
 }
 

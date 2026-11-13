@@ -31,6 +31,7 @@ fun MiniPlayer(vm: VM, onExpand: () -> Unit) {
                     Text(b.chapters.getOrNull(vm.chapter)?.title.orEmpty(), maxLines = 1, overflow = TextOverflow.Ellipsis,
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+                if (b.addonId == "local" && vm.hasBook(b.id)) IconButton({ vm.openBook(b) }) { Icon(Icons.Rounded.MenuBook, "Read along") }
                 IconButton({ vm.skip(-15_000) }) { Icon(Icons.Rounded.Replay10, "Back 15s") }
                 IconButton({ vm.togglePlay() }) { Icon(if (vm.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, "Play/Pause") }
             }
@@ -100,6 +101,7 @@ fun FullPlayer(vm: VM, onClose: () -> Unit) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClose) { Icon(Icons.Rounded.KeyboardArrowDown, "Close") }
                     Spacer(Modifier.weight(1f))
+                    if (b.addonId == "local" && vm.hasBook(b.id)) FilledTonalButton({ vm.openBook(b) }) { Icon(Icons.Rounded.MenuBook, null); Spacer(Modifier.width(6.dp)); Text("Read along") }
                     if (vm.bookmarks.isNotEmpty()) TextButton({ marks = true }) { Icon(Icons.Rounded.Bookmarks, null); Spacer(Modifier.width(6.dp)); Text("${vm.bookmarks.size}") }
                 }
                 if (sideBySide) Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {

@@ -46,6 +46,7 @@
 - **Read aloud, fully offline**: [Piper](https://github.com/rhasspy/piper) neural voices run on the phone through [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx). The current sentence is highlighted and the page turns by itself while it reads. English (US/UK), Romanian, German, French and Spanish voices, ~65 MB each, downloaded once.
 - **Ebook to audiobook converter**: one tap converts a book chapter by chapter into AAC files on the phone. The book is playable after the first chapter while the rest keeps converting (and an interrupted run resumes). It shows up on Home as "Made on this phone" and plays with resume, bookmarks, speed and sleep timer like any other audiobook.
 - **Adaptive layout**: two-page spreads in the reader and list + detail panes on an unfolded Fold or tablet, a player that never needs scrolling, remaining time that follows the playback speed, and a **reading voice** picker in Settings.
+- **Book and player stay in sync**: a converted book keeps a sentence-level timeline, so *Read along* jumps from the player to the exact sentence on the page (highlighted as it is spoken, pages turn by themselves) and turning a page moves the audiobook. Ebooks you read also show up in Continue Listening.
 - **Free classics**: search Project Gutenberg from the Books tab.
 
 ## What's new in 0.2

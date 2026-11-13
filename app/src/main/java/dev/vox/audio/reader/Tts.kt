@@ -131,6 +131,7 @@ object Narrator {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var job: Job? = null
+    private var gen = 0                       // identifies the current run; a stale run must not touch shared state
     private var track: AudioTrack? = null
     private val paused = MutableStateFlow(false)
     private lateinit var audio: AudioManager
@@ -139,16 +140,19 @@ object Narrator {
     private class Chunk(val chapter: Int, val range: IntRange, val pcm: ShortArray)
 
     fun start(ctx: Context, book: EBook, plain: List<String>, fromChapter: Int, fromOffset: Int, voiceId: String) {
+        val old = job
         stopInternal()
+        val my = ++gen
         val app = ctx.applicationContext
         audio = app.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         bookId = book.id; title = book.title; state = S.Loading; message = null; paused.value = false
         NarrationService.start(app)
         job = scope.launch {
+            old?.join()                         // the previous run must finish releasing its AudioTrack before we create ours
             try { run(app, plain, fromChapter, fromOffset, voiceId) }
             catch (e: CancellationException) { throw e }
-            catch (e: Throwable) { message = "Narration failed: ${e.message}" }
-            finally { release(); state = S.Idle; cursor = null }
+            catch (e: Throwable) { if (gen == my) message = "Narration failed: ${e.message}" }
+            finally { release(); if (gen == my) { state = S.Idle; cursor = null } }
         }
     }
 
@@ -222,6 +226,7 @@ class AacWriter(path: String, private val rate: Int) {
     private var samples = 0L
     private val info = MediaCodec.BufferInfo()
     val seconds get() = (samples / rate).toInt()
+    val ms get() = samples * 1000 / rate
 
     init {
         val f = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, rate, 1).apply {
@@ -319,13 +324,16 @@ object Converter {
                     val text = ch.title + "\n \n" + ch.paras.joinToString("\n") + "\n"
                     val f = File(dir, "%03d.m4a".format(ci + 1)); val w = AacWriter(f.path, rate)
                     status = "Chapter ${ci + 1} of ${book.chapters.size}"
+                    val map = ArrayList<LongArray>()
                     for (s in Sentences.split(text)) {
                         ensureActive()
+                        map.add(longArrayOf(w.ms, s.start.toLong(), s.end.toLong()))
                         w.write(tts.generate(text.substring(s.start, s.end).replace('\n', ' '), 0, 1f).samples.toPcm())
                         w.write(ShortArray(rate * 15 / 100))
                         done += s.end - s.start; progress = (done.toFloat() / totalChars).coerceAtMost(1f)
                     }
                     val secs = w.seconds; w.finish()
+                    SyncMap.write(SyncMap.file(app, book.id, ci), map)
                     chapters.put(org.json.JSONObject().put("title", ch.title).put("file", f.path).put("sec", secs))
                     writeJson(dir, book, cover, chapters)
                     ready = chapters.length()

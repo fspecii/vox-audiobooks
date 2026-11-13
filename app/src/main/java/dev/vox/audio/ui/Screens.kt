@@ -332,6 +332,9 @@ fun DetailScreen(vm: VM, b: Book, onBack: (() -> Unit)?) {
                     Icon(if (vm.inLibrary(b)) Icons.Rounded.Check else Icons.Rounded.Add, null)
                     Spacer(Modifier.width(4.dp)); Text("My List")
                 }
+                if (b.addonId == "local" && vm.hasBook(b.id)) FilledTonalButton({ vm.openBook(b) }) {
+                    Icon(Icons.Rounded.MenuBook, null); Spacer(Modifier.width(4.dp)); Text("Read along")
+                }
                 IconButton({ vm.toggleFinished(b) }) {
                     Icon(Icons.Rounded.TaskAlt, "Mark finished", tint = if (vm.isFinished(b)) VoxRed else MaterialTheme.colorScheme.onSurfaceVariant)
                 }

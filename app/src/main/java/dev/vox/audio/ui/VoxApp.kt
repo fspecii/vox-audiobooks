@@ -25,10 +25,10 @@ fun VoxApp(vm: VM) {
     val rail = w >= 600
     val twoPane = w >= 640          // Fold unfolded: list + detail side by side
     var tab by rememberSaveable { mutableIntStateOf(0) }
-    var player by rememberSaveable { mutableStateOf(false) }
-    var reading by rememberSaveable { mutableStateOf<String?>(null) }
+    val player = vm.playerOpen
+    val reading = vm.reading
 
-    BackHandler(player) { player = false }
+    BackHandler(player) { vm.playerOpen = false }
     BackHandler(!player && vm.detail != null && !twoPane) { vm.closeDetail() }
 
     Surface(Modifier.fillMaxSize()) {
@@ -42,8 +42,8 @@ fun VoxApp(vm: VM) {
                     Spacer(Modifier.weight(1f))
                 }
                 Column(Modifier.weight(1f)) {
-                    Box(Modifier.weight(1f), Alignment.TopCenter) { Box(Modifier.widthIn(max = 1500.dp)) { Content(vm, tab, twoPane) { reading = it } } }
-                    MiniPlayer(vm) { player = true }
+                    Box(Modifier.weight(1f), Alignment.TopCenter) { Box(Modifier.widthIn(max = 1500.dp)) { Content(vm, tab, twoPane) { vm.reading = it } } }
+                    MiniPlayer(vm) { vm.playerOpen = true }
                     if (!rail) NavigationBar {
                         tabs.forEachIndexed { i, t ->
                             NavigationBarItem(tab == i, { tab = i }, { Icon(t.icon, t.label) }, label = { Text(t.label) })
@@ -51,9 +51,9 @@ fun VoxApp(vm: VM) {
                     }
                 }
             }
-            reading?.let { id -> ReaderScreen(vm, id) { reading = null } }
+            reading?.let { id -> ReaderScreen(vm, id) { vm.reading = null } }
             AnimatedVisibility(player, enter = slideInVertically { it }, exit = slideOutVertically { it }) {
-                FullPlayer(vm) { player = false }
+                FullPlayer(vm) { vm.playerOpen = false }
             }
         }
     }

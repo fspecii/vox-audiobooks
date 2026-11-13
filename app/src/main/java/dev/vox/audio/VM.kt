@@ -24,7 +24,7 @@ data class Row(val addon: Addon, val cat: CatalogDef, val books: List<Book> = em
 
 class VM(app: Application) : AndroidViewModel(app) {
     val store = Store(app)
-    private val builtin: List<Addon> = listOf(LibriVoxAddon(), ArchiveAddon(), TorrentAddon(), YouTubeAddon(), LocalAddon(app))
+    private val builtin: List<Addon> = listOf(LocalAddon(app), LibriVoxAddon(), ArchiveAddon(), TorrentAddon(), YouTubeAddon())
 
     var addons by mutableStateOf(builtin)
     var installBusy by mutableStateOf(false)
@@ -109,6 +109,50 @@ class VM(app: Application) : AndroidViewModel(app) {
         rows = rows.map { if (it.key == r.key) it.copy(loading = true) else it }
         loadRow(r, 0)
     }
+    // navigation shared between player and reader (audio first: the two always know about each other)
+    var reading by mutableStateOf<String?>(null)
+    var playerOpen by mutableStateOf(false)
+    var readerJump by mutableStateOf<Pair<Int, Int>?>(null)     // (chapter, char offset) the open reader should show
+
+    fun hasBook(id: String) = dev.vox.audio.reader.Ebooks.list.any { it.id == id }
+
+    /** From an on-device audiobook straight to the same sentence in its ebook. */
+    fun openBook(b: Book) {
+        if (b.addonId != "local") return
+        val live = nowBook?.key == b.key
+        val p = store.progress(b.key)
+        val ch = if (live) chapter else p?.chapter ?: 0
+        val ms = if (live) position else p?.positionMs ?: 0L
+        val off = dev.vox.audio.reader.SyncMap.charAt(getApplication(), b.id, ch, ms)?.first ?: 0
+        store.setReadPos(b.id, ch, off)
+        readerJump = ch to off
+        playerOpen = false
+        reading = b.id
+    }
+
+    fun seekChapterMs(ci: Int, ms: Long) { controller?.let { if (ci in 0 until it.mediaItemCount) it.seekTo(ci, ms) } }
+
+    /** Play the converted audiobook of [id] from a given chapter/time (used by the reader's Listen button). */
+    fun playLocalAt(id: String, ci: Int, ms: Long) = viewModelScope.launch {
+        val m = runCatching { addons.first { it.id == "local" }.meta(Book(id, "local", "")) }.getOrNull() ?: return@launch
+        if (m.chapters.isEmpty()) return@launch
+        val c = ci.coerceIn(0, m.chapters.lastIndex)
+        val t = if (c == ci) ms else 0L
+        if (nowBook?.key == m.key && controller?.mediaItemCount ?: 0 > 0 && !isStale(m)) {
+            controller?.seekTo(c, t); if (controller?.isPlaying != true) togglePlay()
+        } else play(m, c, t)
+    }
+
+    /** Reading progress of an ebook shows up in Continue Listening next to audiobooks. */
+    fun touchEbook(m: dev.vox.audio.reader.EbookMeta, chapter: Int, offset: Int, fraction: Float) {
+        val key = "ebook|${m.id}"
+        store.saveProgress(Progress(key, chapter, offset.toLong(), System.currentTimeMillis(), fraction.coerceIn(0f, 1f)))
+        if (history.firstOrNull()?.key != key) {
+            history = (listOf(Book(m.id, "ebook", m.title, m.author, m.cover)) + history.filter { it.key != key }).take(40)
+            store.setHistory(history)
+        }
+    }
+
     var voiceId by mutableStateOf(store.voice)            // "" = automatic (match the book's language)
     fun setVoice(id: String) { voiceId = id; store.voice = id
         if (id.isNotBlank() && !dev.vox.audio.reader.Voices.installed(id)) viewModelScope.launch { dev.vox.audio.reader.Voices.install(id) } }
@@ -182,6 +226,7 @@ class VM(app: Application) : AndroidViewModel(app) {
 
     // ---------- detail / library ----------
     fun open(b: Book) {
+        if (b.addonId == "ebook") { reading = b.id; return }
         detail = b; detailError = null; detailLoading = b.chapters.isEmpty()
         if (b.chapters.isNotEmpty()) return
         viewModelScope.launch {
@@ -195,7 +240,17 @@ class VM(app: Application) : AndroidViewModel(app) {
     }
     fun closeDetail() { detail = null }
 
-    val continueList get() = history.filter { it.key !in finished }
+    /** An ebook and its converted audiobook are one book: show it once, and prefer the audiobook (audio first). */
+    val continueList: List<Book> get() {
+        val groups = LinkedHashMap<String, Book>()
+        for (b in history) {
+            if (b.key in finished) continue
+            val g = if (b.addonId == "ebook" || b.addonId == "local") "book:${b.id}" else b.key
+            val cur = groups[g]
+            if (cur == null || (b.addonId == "local" && cur.addonId == "ebook")) groups[g] = b
+        }
+        return groups.values.toList()
+    }
     fun removeFromHistory(b: Book) { history = history.filter { it.key != b.key }; store.setHistory(history) }
     fun fractionOf(b: Book) = if (b.key in finished) 1f else store.progress(b.key)?.fraction?.takeIf { it > 0.005f }
     fun isFinished(b: Book) = b.key in finished
@@ -208,6 +263,7 @@ class VM(app: Application) : AndroidViewModel(app) {
     /** "Ch 5 · 12:34" for the Resume button. */
     fun resumeLabel(b: Book): String? {
         if (b.key in finished) return null
+        if (b.addonId == "ebook") { val p = store.progress(b.key) ?: return null; return "Ch ${p.chapter + 1} · ${(p.fraction * 100).toInt()}%" }
         val p = store.progress(b.key) ?: return null
         if (p.positionMs < 1000 && p.chapter == 0) return null
         return "Ch ${p.chapter + 1} · ${dev.vox.audio.ui.fmtTime(p.positionMs)}"
@@ -328,6 +384,7 @@ class VM(app: Application) : AndroidViewModel(app) {
     private fun isStale(b: Book) = b.chapters.firstOrNull()?.url?.let { !Torrents.knows(it) } == true
 
     fun resume(book: Book) {
+        if (book.addonId == "ebook") { reading = book.id; return }
         val cur = nowBook?.takeIf { it.key == book.key }
         if (cur != null && !isStale(cur)) { togglePlay(); return }
         val p = store.progress(book.key)
