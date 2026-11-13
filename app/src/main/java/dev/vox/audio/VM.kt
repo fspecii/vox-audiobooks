@@ -144,6 +144,30 @@ class VM(app: Application) : AndroidViewModel(app) {
 
     var preparing by mutableStateOf(false)
 
+    /** Opening an ebook: if it already has audio it goes straight to the main player; otherwise ask what to do. */
+    var askBook by mutableStateOf<String?>(null)
+    fun hasAudio(id: String) = java.io.File(getApplication<Application>().filesDir, "audiobooks/$id/book.json").exists()
+
+    fun openEbook(id: String) {
+        if (hasAudio(id)) { playLocal(id); playerOpen = true } else askBook = id
+    }
+
+    /** Listen without the text: generate from where you left off (or the start) and open the player when the first part is ready. */
+    fun listenBook(id: String) = viewModelScope.launch {
+        askBook = null
+        val eb = runCatching { dev.vox.audio.reader.Ebooks.load(id) }.getOrNull() ?: return@launch
+        val pos = store.readPos(id) ?: (0 to 0)
+        listenFrom(eb, pos.first, pos.second).join()
+        if (nowBook?.key == "local|$id") playerOpen = true
+    }
+
+    /** Reader -> player: continue the audiobook at this page (makes it first if needed) and show the player. */
+    fun switchToAudio(b: dev.vox.audio.reader.EBook, chapter: Int, offset: Int) = viewModelScope.launch {
+        if (nowBook?.key == "local|${b.id}" && controller?.mediaItemCount ?: 0 > 0) { reading = null; playerOpen = true; return@launch }
+        listenFrom(b, chapter, offset).join()
+        if (nowBook?.key == "local|${b.id}") { reading = null; playerOpen = true }
+    }
+
     /**
      * The one "Listen" action for ebooks: make sure the part holding this spot exists (generating from here first, then the rest of the
      * book), then play it in the same player as every other audiobook. If it is already playing, just move to the sentence.
@@ -416,6 +440,7 @@ class VM(app: Application) : AndroidViewModel(app) {
     fun bookLeftSec(): Long? {
         val b = nowBook ?: return null
         if (b.chapters.isEmpty() || b.chapters.any { it.durationSec <= 0 }) return null
+        if (b.addonId == "local" && (b.pending > 0 || dev.vox.audio.reader.Converter.bookId == b.id)) return null   // still being generated: total unknown
         val cur = (b.chapters[chapter.coerceIn(0, b.chapters.lastIndex)].durationSec - position / 1000).coerceAtLeast(0)
         return cur + b.chapters.drop(chapter + 1).sumOf { it.durationSec }
     }

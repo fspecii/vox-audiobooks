@@ -42,7 +42,7 @@ fun VoxApp(vm: VM) {
                     Spacer(Modifier.weight(1f))
                 }
                 Column(Modifier.weight(1f)) {
-                    Box(Modifier.weight(1f), Alignment.TopCenter) { Box(Modifier.widthIn(max = 1500.dp)) { Content(vm, tab, twoPane) { vm.reading = it } } }
+                    Box(Modifier.weight(1f), Alignment.TopCenter) { Box(Modifier.widthIn(max = 1500.dp)) { Content(vm, tab, twoPane) { vm.openEbook(it) } } }
                     MiniPlayer(vm) { vm.playerOpen = true }
                     if (!rail) NavigationBar {
                         tabs.forEachIndexed { i, t ->
@@ -52,6 +52,23 @@ fun VoxApp(vm: VM) {
                 }
             }
             reading?.let { id -> ReaderScreen(vm, id) { vm.reading = null } }
+            vm.askBook?.let { id ->
+                val meta = dev.vox.audio.reader.Ebooks.list.firstOrNull { it.id == id }
+                AlertDialog({ vm.askBook = null },
+                    icon = { Icon(Icons.Rounded.MenuBook, null) },
+                    title = { Text(meta?.title ?: "Open book", maxLines = 2) },
+                    text = { Text("Read it page by page, or listen to it as an audiobook? The audio is made on your phone, starts after the first minute and keeps generating while you listen. You can switch between the two at any time.") },
+                    confirmButton = { Button({ vm.listenBook(id) }) { Icon(Icons.Rounded.Headphones, null); Spacer(Modifier.width(8.dp)); Text("Listen") } },
+                    dismissButton = { Row { TextButton({ vm.askBook = null }) { Text("Cancel") }; TextButton({ vm.askBook = null; vm.reading = id }) { Icon(Icons.Rounded.MenuBook, null); Spacer(Modifier.width(8.dp)); Text("Read") } } })
+            }
+            AnimatedVisibility(vm.preparing && !player && reading == null, Modifier.align(Alignment.BottomCenter).padding(bottom = 96.dp)) {
+                Surface(shape = androidx.compose.foundation.shape.RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surfaceVariant, tonalElevation = 6.dp) {
+                    Row(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.size(18.dp), color = VoxRed, strokeWidth = 2.dp); Spacer(Modifier.width(12.dp))
+                        Text("Making the first minutes of audio…")
+                    }
+                }
+            }
             AnimatedVisibility(player, enter = slideInVertically { it }, exit = slideOutVertically { it }) {
                 FullPlayer(vm) { vm.playerOpen = false }
             }

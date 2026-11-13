@@ -1,6 +1,7 @@
 package dev.vox.audio.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.background
 import androidx.compose.ui.draw.blur
 import androidx.compose.foundation.horizontalScroll
@@ -111,7 +112,7 @@ fun FullPlayer(vm: VM, onClose: () -> Unit) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClose) { Icon(Icons.Rounded.KeyboardArrowDown, "Close") }
                     Spacer(Modifier.weight(1f))
-                    if (b.addonId == "local" && vm.hasBook(b.id)) FilledTonalButton({ vm.openBook(b) }) { Icon(Icons.Rounded.MenuBook, null); Spacer(Modifier.width(6.dp)); Text("Read along") }
+                    if (b.addonId == "local" && vm.hasBook(b.id)) ModeSwitch(audio = true, onAudio = {}, onBook = { vm.openBook(b) })
                     if (vm.bookmarks.isNotEmpty()) TextButton({ marks = true }) { Icon(Icons.Rounded.Bookmarks, null); Spacer(Modifier.width(6.dp)); Text("${vm.bookmarks.size}") }
                 }
                 if (sideBySide) Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
@@ -160,4 +161,23 @@ fun FullPlayer(vm: VM, onClose: () -> Unit) {
                 trailingContent = { IconButton({ vm.removeBookmark(m) }) { Icon(Icons.Rounded.Close, "Remove") } },
                 modifier = Modifier.clickable { vm.jumpTo(m); marks = false })
         } } })
+}
+
+/** Audio | Book: one tap moves between listening and reading the same book at the same sentence. */
+@Composable
+fun ModeSwitch(audio: Boolean, onAudio: () -> Unit, onBook: () -> Unit, dark: Boolean = true) {
+    val on = VoxRed; val off = androidx.compose.ui.graphics.Color.Transparent
+    val ink = if (dark) androidx.compose.ui.graphics.Color.White else androidx.compose.ui.graphics.Color(0xFF2B2622)
+    Row(Modifier.clip(androidx.compose.foundation.shape.RoundedCornerShape(50)).background(ink.copy(alpha = .12f)).padding(3.dp)) {
+        @Composable fun seg(sel: Boolean, icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, click: () -> Unit) {
+            Row(Modifier.clip(androidx.compose.foundation.shape.RoundedCornerShape(50)).background(if (sel) on else off).clickable(onClick = click)
+                .padding(horizontal = 14.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(icon, null, Modifier.size(18.dp), tint = if (sel) androidx.compose.ui.graphics.Color.White else ink)
+                Spacer(Modifier.width(6.dp))
+                Text(label, color = if (sel) androidx.compose.ui.graphics.Color.White else ink, style = MaterialTheme.typography.labelLarge)
+            }
+        }
+        seg(audio, Icons.Rounded.Headphones, "Audio", onAudio)
+        seg(!audio, Icons.Rounded.MenuBook, "Book", onBook)
+    }
 }

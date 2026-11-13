@@ -238,6 +238,7 @@ fun ReaderScreen(vm: VM, id: String, onClose: () -> Unit) {
                 verticalAlignment = Alignment.CenterVertically) {
                 IconButton({ onClose() }) { Icon(Icons.Rounded.ArrowBack, "Back", tint = th.ink) }
                 Text(b.title, color = th.ink, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                ModeSwitch(audio = false, onAudio = { vm.switchToAudio(b, anchor.first, anchor.second) }, onBook = {}, dark = themeIdx == 2)
                 IconButton({ toc = true }) { Icon(Icons.Rounded.FormatListBulleted, "Contents", tint = th.ink) }
                 Box {
                     IconButton({ fontMenu = true }) { Icon(Icons.Rounded.TextFields, "Text", tint = th.ink) }
@@ -253,10 +254,33 @@ fun ReaderScreen(vm: VM, id: String, onClose: () -> Unit) {
                 }
             }
 
+            // ---- Kindle-style progress: page x of N, percent, time left in chapter
+            val spreads = (pg.pages.size + per - 1) / per
+            val curPage = (curl.settled * per + 1).coerceIn(1, pg.pages.size)
+            val pct = curPage * 100 / pg.pages.size
+            val chIdx = pg.pages.getOrNull(curPage - 1)?.chapter ?: 0
+            val wordsPerPage = remember(pg) { (pg.plain.sumOf { it.length } / 5.8 / pg.pages.size.coerceAtLeast(1)).coerceAtLeast(40.0) }
+            val chLeft = pg.pages.drop(curPage).count { it.chapter == chIdx }
+            val minLeft = (chLeft * wordsPerPage / 240.0).toInt()
+            val progressLabel = "Page $curPage of ${pg.pages.size} · $pct%" + (if (chLeft > 0) " · " + (if (minLeft >= 1) "$minLeft min left in chapter" else "less than a minute left") else "")
+            val playingNow = vm.nowBook?.key == audioKey && vm.isPlaying
+            if (!chrome && !playingNow && !vm.preparing) Text(progressLabel, color = th.sub, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(horizontal = 24.dp, vertical = 10.dp))
+
             // ---- bottom: ONE transport for the book (it is the same player as every other audiobook)
             val voiceId = vm.voiceId.ifBlank { Voices.forLang(b.lang).id }
             val spec0 = pg.pages.getOrNull(curl.settled * per)
             Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
+                if (chrome) Surface(color = th.paper.copy(alpha = .97f)) {
+                    var drag by remember { mutableStateOf<Float?>(null) }
+                    Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
+                        Slider(value = drag ?: curl.settled.toFloat(), onValueChange = { drag = it },
+                            onValueChangeFinished = { drag?.let { v -> scope.launch { curl.jump(v.toInt()) } }; drag = null },
+                            valueRange = 0f..(spreads - 1).coerceAtLeast(1).toFloat(), colors = SliderDefaults.colors(thumbColor = VoxRed, activeTrackColor = VoxRed, inactiveTrackColor = th.sub.copy(alpha = .3f)))
+                        Text(if (drag != null) "Page ${(drag!!.toInt() * per + 1).coerceAtMost(pg.pages.size)} of ${pg.pages.size} · ${b.chapters.getOrNull(pg.pages.getOrNull((drag!!.toInt() * per).coerceAtMost(pg.pages.size - 1))?.chapter ?: 0)?.title.orEmpty()}" else progressLabel,
+                            color = th.sub, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
                 (Voices.installing ?: Converter.bookId?.takeIf { it == id })?.let {
                     val p = if (Voices.installing != null) Voices.progress else Converter.progress
                     Surface(color = th.ink.copy(alpha = .92f)) { Column(Modifier.padding(12.dp).fillMaxWidth()) {
@@ -269,7 +293,7 @@ fun ReaderScreen(vm: VM, id: String, onClose: () -> Unit) {
                     } }
                 }
                 Voices.error?.let { Surface(color = MaterialTheme.colorScheme.errorContainer) { Text(it, Modifier.padding(12.dp).fillMaxWidth(), fontSize = 13.sp) } }
-                if (chrome || (audioLoaded && vm.isPlaying) || vm.preparing) Row(Modifier.fillMaxWidth().background(th.ink.copy(alpha = .94f)).navigationBarsPadding().padding(horizontal = 8.dp, vertical = 4.dp),
+                if ((audioLoaded && vm.isPlaying) || vm.preparing) Row(Modifier.fillMaxWidth().background(th.ink.copy(alpha = .94f)).navigationBarsPadding().padding(horizontal = 8.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically) {
                     FilledIconButton({
                         if (audioLoaded) vm.togglePlay()
@@ -331,7 +355,5 @@ private fun PageView(b: EBook, pg: Paged, idx: Int, th: Theme, w: androidx.compo
                 nc.restore()
             }
         }
-        Text("${b.chapters.getOrNull(spec.chapter)?.title.orEmpty()}  ·  ${idx + 1} / $total", color = th.sub, fontSize = 11.sp, maxLines = 1,
-            overflow = TextOverflow.Ellipsis, modifier = Modifier.align(Alignment.BottomCenter).padding(vertical = 14.dp))
     }
 }
