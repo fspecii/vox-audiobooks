@@ -141,29 +141,51 @@ private fun RowSection(vm: VM, r: CatRow, onOpen: (Book) -> Unit) {
 // ------------------------------------------------------------------ SEARCH
 @Composable
 fun SearchScreen(vm: VM, onOpen: (Book) -> Unit) {
+    val picker = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) vm.importBook(uri) }
+    // chip -> filter id (VM keeps 0 all, 1 torrents, 2 youtube, 3 books)
+    val chips = listOf("All" to 0, "Books" to 3, "Torrents" to 1, "YouTube" to 2)
+    val f = vm.searchFilter
+    val showBooksHome = vm.query.isBlank() && (f == 0 || f == 3)
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
-        OutlinedTextField(
-            value = vm.query, onValueChange = vm::search, singleLine = true,
-            placeholder = { Text("Title, author, YouTube link or magnet") },
-            leadingIcon = { Icon(Icons.Rounded.Search, null) },
-            trailingIcon = { if (vm.query.isNotEmpty()) IconButton({ vm.search("") }) { Icon(Icons.Rounded.Close, null) } },
-            modifier = Modifier.fillMaxWidth().padding(16.dp, 12.dp, 16.dp, 4.dp),
-        )
-        Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("All", "Torrents", "YouTube").forEachIndexed { i, l ->
-                FilterChip(vm.searchFilter == i, { vm.setFilter(i) }, { Text(l) })
-            }
+        Row(Modifier.padding(16.dp, 12.dp, 16.dp, 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(
+                value = vm.query, onValueChange = vm::search, singleLine = true, modifier = Modifier.weight(1f),
+                placeholder = { Text("Search books, audio, YouTube…", maxLines = 1) },
+                leadingIcon = { Icon(Icons.Rounded.Search, null) },
+                trailingIcon = { if (vm.query.isNotEmpty()) IconButton({ vm.search("") }) { Icon(Icons.Rounded.Close, null) } },
+            )
+            FilledTonalIconButton({ picker.launch(arrayOf("application/epub+zip", "text/plain", "application/octet-stream")) }) { Icon(Icons.Rounded.UploadFile, "Import an EPUB or TXT") }
         }
+        Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            chips.forEach { (l, id) -> FilterChip(f == id, { vm.setFilter(id) }, { Text(l) }) }
+        }
+        if (vm.bookBusy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(16.dp, 8.dp), color = VoxRed)
+        vm.bookMsg?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp, 4.dp)) }
+        val nothing = vm.results.isEmpty() && vm.gutResults.isEmpty()
         when {
-            vm.query.isBlank() -> Box(Modifier.fillMaxSize().padding(32.dp), Alignment.Center) {
-                Text("Search every installed source at once.\nPaste a YouTube link, playlist or magnet to open it directly.",
+            showBooksHome && dev.vox.audio.reader.Ebooks.list.isEmpty() -> Box(Modifier.fillMaxSize().padding(32.dp), Alignment.Center) {
+                Text("Search every source at once: audiobooks, free books, YouTube and torrents.\nPaste a YouTube link or magnet to open it directly, or import your own EPUB.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            vm.searching -> Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator(color = VoxRed) }
-            vm.results.isEmpty() -> Box(Modifier.fillMaxSize(), Alignment.Center) { Text("No results", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            vm.query.isBlank() && !showBooksHome -> Box(Modifier.fillMaxSize().padding(32.dp), Alignment.Center) {
+                Text(if (f == 1) "Search torrents or paste a magnet link." else "Search YouTube or paste a link or playlist.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            vm.searching && nothing -> Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator(color = VoxRed) }
+            vm.query.isNotBlank() && !vm.searching && nothing -> Box(Modifier.fillMaxSize(), Alignment.Center) { Text("No results", color = MaterialTheme.colorScheme.onSurfaceVariant) }
             else -> LazyVerticalGrid(GridCells.Adaptive(130.dp), contentPadding = PaddingValues(12.dp, 12.dp, 12.dp, 24.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(vm.results, key = { it.key }) { BookCard(it) { onOpen(it) } }
+                if (showBooksHome) {
+                    item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) { Text("Your books", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(4.dp, 4.dp, 4.dp, 0.dp)) }
+                    items(dev.vox.audio.reader.Ebooks.list, key = { "eb" + it.id }) { EbookCard(vm, it) }
+                }
+                if (vm.gutResults.isNotEmpty()) {
+                    item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) { Text("Free books", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(4.dp, 4.dp, 4.dp, 0.dp)) }
+                    items(vm.gutResults, key = { "g" + it.id }) { g -> BookCard(Book("gut:${g.id}", "gutenberg", g.title, g.author, g.cover)) { vm.openGutenberg(g) } }
+                }
+                if (vm.results.isNotEmpty()) {
+                    if (vm.gutResults.isNotEmpty()) item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) { Text("Audiobooks, YouTube and torrents", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(4.dp, 8.dp, 4.dp, 0.dp)) }
+                    items(vm.results, key = { it.key }) { BookCard(it) { onOpen(it) } }
+                }
             }
         }
     }

@@ -49,78 +49,22 @@ private val themes = listOf(
     Theme(Color(0xFF121212), Color(0xFFCFCAC0), Color(0xFF7D7870)),     // night
 )
 
-// ------------------------------------------------------------------ BOOKS TAB
+// ------------------------------------------------------------------ BOOK CARD (used by Search)
 @Composable
-fun BooksScreen(vm: VM, onRead: (String) -> Unit) {
+fun EbookCard(vm: VM, b: EbookMeta, modifier: Modifier = Modifier) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    var q by rememberSaveable { mutableStateOf("") }
-    var results by remember { mutableStateOf<List<GutBook>>(emptyList()) }
-    var busy by remember { mutableStateOf(false) }
-    var msg by remember { mutableStateOf<String?>(null) }
-    var menuFor by remember { mutableStateOf<EbookMeta?>(null) }
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) scope.launch {
-            busy = true; msg = null
-            runCatching { Ebooks.importUri(uri, "Book") }.fold({ onRead(it) }, { msg = it.message ?: "Could not import" })
-            busy = false
-        }
-    }
-    LaunchedEffect(q) {
-        if (q.isBlank()) { results = emptyList(); return@LaunchedEffect }
-        delay(450); busy = true
-        results = runCatching { Ebooks.gutenberg(q) }.getOrDefault(emptyList()); busy = false
-    }
-    Column(Modifier.fillMaxSize().statusBarsPadding()) {
-        Text("Books", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(16.dp, 16.dp, 16.dp, 4.dp))
-        Text("Read with a page-curl, or let a Piper voice read to you, on-device. Import an EPUB/TXT or grab a free classic.",
-            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp))
-        Row(Modifier.padding(16.dp, 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(q, { q = it }, singleLine = true, placeholder = { Text("Find free books (Project Gutenberg)") },
-                leadingIcon = { Icon(Icons.Rounded.Search, null) }, modifier = Modifier.weight(1f))
-            FilledTonalIconButton({ picker.launch(arrayOf("application/epub+zip", "text/plain", "application/octet-stream")) }) { Icon(Icons.Rounded.UploadFile, "Import") }
-        }
-        if (busy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 16.dp), color = VoxRed)
-        msg?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp, 0.dp)) }
-        if (q.isNotBlank()) {
-            LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
-                items(results.size) { i ->
-                    val g = results[i]
-                    ListItem(
-                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                        leadingContent = { Cover(g.cover, Modifier.size(48.dp, 64.dp), 4.dp) },
-                        headlineContent = { Text(g.title, maxLines = 2, overflow = TextOverflow.Ellipsis) },
-                        supportingContent = { Text(g.author, maxLines = 1) },
-                        trailingContent = { TextButton({ scope.launch { busy = true; msg = null
-                            runCatching { Ebooks.downloadGutenberg(g) }.fold({ q = ""; onRead(it) }, { msg = "Download failed: ${it.message}" }); busy = false } }) { Text("Read") } },
-                    )
-                }
-            }
-        } else if (Ebooks.list.isEmpty()) Box(Modifier.fillMaxSize().padding(32.dp), Alignment.Center) {
-            Text("Your library is empty.\nSearch above or import an .epub.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        } else LazyVerticalGrid(GridCells.Adaptive(130.dp), contentPadding = PaddingValues(12.dp, 4.dp, 12.dp, 24.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(Ebooks.list, key = { it.id }) { b ->
-                val audio = remember(Converter.ready, Converter.bookId, b.id) { File(ctx.filesDir, "audiobooks/${b.id}/book.json").exists() }
-                Box {
-                    BookCard(dev.vox.audio.data.Book(b.id, if (audio) "ebook+audio" else "ebook", b.title, b.author, b.cover)) { onRead(b.id) }
-                    IconButton({ menuFor = b }, Modifier.align(Alignment.TopEnd).size(32.dp)) { Icon(Icons.Rounded.MoreVert, "More", tint = Color.White) }
-                    if (Converter.bookId == b.id) LinearProgressIndicator({ Converter.progress }, Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(4.dp), color = VoxRed)
-                    DropdownMenu(menuFor?.id == b.id, { menuFor = null }) {
-                        if (audio) DropdownMenuItem({ Text("Listen to the audiobook") }, { menuFor = null; vm.playLocal(b.id); vm.playerOpen = true })
-                        if (!audio || Converter.bookId != b.id) DropdownMenuItem({ Text(if (audio) "Continue conversion" else "Convert to audiobook") }, {
-                            menuFor = null
-                            scope.launch {
-                                val eb = runCatching { Ebooks.load(b.id) }.getOrNull() ?: return@launch
-                                val vid = vm.voiceId.ifBlank { Voices.forLang(eb.lang).id }
-                                if (!Voices.installed(vid)) Voices.install(vid)
-                                if (Voices.installed(vid)) Converter.start(ctx, eb, vid, 0) { vm.refreshLocal() }
-                            }
-                        })
-                        DropdownMenuItem({ Text("Remove") }, { Ebooks.remove(b.id); menuFor = null; vm.refreshLocal() })
-                    }
-                }
-            }
+    var menu by remember { mutableStateOf(false) }
+    val audio = remember(Converter.ready, Converter.bookId, b.id) { vm.hasAudio(b.id) }
+    Box(modifier) {
+        BookCard(dev.vox.audio.data.Book(b.id, if (audio) "ebook+audio" else "ebook", b.title, b.author, b.cover)) { vm.openEbook(b.id) }
+        IconButton({ menu = true }, Modifier.align(Alignment.TopEnd).size(32.dp)) { Icon(Icons.Rounded.MoreVert, "More", tint = Color.White) }
+        if (Converter.bookId == b.id) LinearProgressIndicator({ Converter.progress }, Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(4.dp), color = VoxRed)
+        DropdownMenu(menu, { menu = false }) {
+            DropdownMenuItem({ Text("Read") }, { menu = false; vm.reading = b.id }, leadingIcon = { Icon(Icons.Rounded.MenuBook, null) })
+            if (audio) DropdownMenuItem({ Text("Listen") }, { menu = false; vm.playLocal(b.id); vm.playerOpen = true }, leadingIcon = { Icon(Icons.Rounded.Headphones, null) })
+            else DropdownMenuItem({ Text("Make audiobook") }, { menu = false; vm.continueConversion(b.id) }, leadingIcon = { Icon(Icons.Rounded.Headphones, null) })
+            DropdownMenuItem({ Text("Remove") }, { Ebooks.remove(b.id); menu = false; vm.refreshLocal() }, leadingIcon = { Icon(Icons.Rounded.Delete, null) })
         }
     }
 }

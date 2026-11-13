@@ -21,7 +21,7 @@ import androidx.compose.ui.unit.dp
 import dev.vox.audio.VM
 
 private data class Tab(val label: String, val icon: androidx.compose.ui.graphics.vector.ImageVector)
-private val tabs = listOf(Tab("Home", Icons.Rounded.Home), Tab("Search", Icons.Rounded.Search), Tab("Books", Icons.Rounded.MenuBook), Tab("My Vox", Icons.Rounded.Bookmarks), Tab("Settings", Icons.Rounded.Settings))
+private val tabs = listOf(Tab("Home", Icons.Rounded.Home), Tab("Search", Icons.Rounded.Search), Tab("My Vox", Icons.Rounded.Bookmarks), Tab("Settings", Icons.Rounded.Settings))
 
 @Composable
 fun VoxApp(vm: VM) {
@@ -108,8 +108,7 @@ fun VoxApp(vm: VM) {
 @Composable
 private fun Content(vm: VM, tab: Int, twoPane: Boolean, onRead: (String) -> Unit) {
     val detail = vm.detail
-    if (tab == 4) { AddonsScreen(vm); return }
-    if (tab == 2) { BooksScreen(vm, onRead); return }
+    if (tab == 3) { AddonsScreen(vm); return }
     val list: @Composable () -> Unit = {
         when (tab) { 0 -> HomeScreen(vm) { vm.open(it) }; 1 -> SearchScreen(vm) { vm.open(it) }; else -> MyListScreen(vm) { vm.open(it) } }
     }

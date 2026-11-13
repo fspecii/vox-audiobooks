@@ -35,6 +35,7 @@ fun sourceBadge(addonId: String): String? = when {
     addonId == "youtube" -> "YOUTUBE"
     addonId == "local" -> "AI VOICE"
     addonId == "ebook" -> "BOOK"
+    addonId == "gutenberg" -> "FREE BOOK"
     addonId == "ebook+audio" -> "BOOK + AUDIO"
     else -> null
 }
@@ -97,6 +98,6 @@ fun PartsBar(chapterParts: List<dev.vox.audio.reader.Part>, done: Set<Int>, acti
 
 /** Subtitles and long catalogue titles are cut: "Moby Dick / or, The Whale" -> "Moby Dick", at most 44 characters. */
 fun displayTitle(t: String): String {
-    val c = t.substringBefore(" / ").substringBefore(" : ").substringBefore(" — ").substringBefore(" (").trim().ifBlank { t }
+    val c = t.substringBefore("; or,").substringBefore(", or,").substringBefore(" / ").substringBefore(" : ").substringBefore(" — ").substringBefore(" (").trim().ifBlank { t }
     return if (c.length > 44) c.take(42).trimEnd(' ', ',', ':', ';') + "…" else c
 }

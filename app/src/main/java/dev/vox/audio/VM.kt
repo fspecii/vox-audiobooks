@@ -40,7 +40,10 @@ class VM(app: Application) : AndroidViewModel(app) {
     var detailError by mutableStateOf<String?>(null)
     var library by mutableStateOf(store.library())
     var history by mutableStateOf(store.history())
-    var searchFilter by mutableIntStateOf(0)      // 0 = all, 1 = torrents, 2 = youtube
+    var searchFilter by mutableIntStateOf(0)      // 0 = all, 1 = torrents, 2 = youtube, 3 = books
+    var gutResults by mutableStateOf<List<dev.vox.audio.reader.GutBook>>(emptyList())
+    var bookBusy by mutableStateOf(false)
+    var bookMsg by mutableStateOf<String?>(null)
     var torrentStatus by mutableStateOf<String?>(null)
     var finished by mutableStateOf(store.finished())
     var bookmarks by mutableStateOf<List<Bookmark>>(emptyList())     // bookmarks of the book now playing
@@ -267,7 +270,7 @@ class VM(app: Application) : AndroidViewModel(app) {
     fun search(q: String) {
         query = q
         searchJob?.cancel()
-        if (q.isBlank()) { results = emptyList(); searching = false; return }
+        if (q.isBlank()) { results = emptyList(); gutResults = emptyList(); searching = false; return }
         searching = true
         searchJob = viewModelScope.launch {
             delay(400)
@@ -282,11 +285,29 @@ class VM(app: Application) : AndroidViewModel(app) {
                     else -> true
                 }
             }
+            val wantBooks = !isRef && !isYt && (searchFilter == 0 || searchFilter == 3)
+            if (searchFilter == 3) {
+                results = emptyList()
+                gutResults = runCatching { dev.vox.audio.reader.Ebooks.gutenberg(q) }.getOrDefault(emptyList())
+                searching = false; return@launch
+            }
+            if (wantBooks) launch { gutResults = runCatching { dev.vox.audio.reader.Ebooks.gutenberg(q) }.getOrDefault(emptyList()) } else gutResults = emptyList()
             val all = pool.flatMap { a -> a.catalogs.filter { it.searchable }.take(1).map { c -> a to c } }
                 .map { (a, c) -> async { runCatching { a.catalog(c.id, q, 0) }.getOrDefault(emptyList()) } }.awaitAll()
             results = all.flatten()
             searching = false
         }
+    }
+
+    fun openGutenberg(g: dev.vox.audio.reader.GutBook) = viewModelScope.launch {
+        bookBusy = true; bookMsg = null
+        runCatching { dev.vox.audio.reader.Ebooks.downloadGutenberg(g) }.fold({ openEbook(it) }, { bookMsg = "Download failed: ${it.message}" })
+        bookBusy = false
+    }
+    fun importBook(uri: Uri) = viewModelScope.launch {
+        bookBusy = true; bookMsg = null
+        runCatching { dev.vox.audio.reader.Ebooks.importUri(uri, "Book") }.fold({ openEbook(it) }, { bookMsg = it.message ?: "Could not import" })
+        bookBusy = false
     }
 
     fun setFilter(f: Int) { searchFilter = f; search(query) }
