@@ -454,7 +454,7 @@ class VM(app: Application) : AndroidViewModel(app) {
     }
 
     private fun mediaItems(book: Book) = book.chapters.mapIndexed { i, ch ->
-        MediaItem.Builder().setUri(ch.url).setMediaId("${book.key}#${if (book.addonId == "local" && ch.id >= 0) ch.id else i}")
+        MediaItem.Builder().setUri(if (book.addonId == "local") ch.url else dev.vox.audio.data.Downloads.resolve(getApplication(), book.key, i, ch.url)).setMediaId("${book.key}#${if (book.addonId == "local" && ch.id >= 0) ch.id else i}")
             .setMediaMetadata(MediaMetadata.Builder().setTitle(ch.title).setArtist(book.author).setAlbumTitle(book.title)
                 .apply {
                     val u = book.cover

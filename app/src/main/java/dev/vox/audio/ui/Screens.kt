@@ -28,6 +28,7 @@ import dev.vox.audio.Row as CatRow
 import dev.vox.audio.data.Book
 import dev.vox.audio.data.HttpAddon
 import dev.vox.audio.data.Torrents
+import dev.vox.audio.data.Downloads
 
 // ------------------------------------------------------------------ HOME
 @Composable
@@ -194,7 +195,14 @@ fun SearchScreen(vm: VM, onOpen: (Book) -> Unit) {
                 }
                 if (vm.gutResults.isNotEmpty()) {
                     item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) { Text("Free books", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(4.dp, 4.dp, 4.dp, 0.dp)) }
-                    items(vm.gutResults, key = { "g" + it.id }) { g -> BookCard(Book("gut:${g.id}", "gutenberg", g.title, g.author, g.cover)) { vm.openGutenberg(g) } }
+                    // in "All" the free books are one swipeable row (6 max) so audiobooks, YouTube and torrents stay visible; "Books" shows the full grid
+                    if (f == 3) items(vm.gutResults, key = { "g" + it.id }) { g -> BookCard(Book("gut:${g.id}", "gutenberg", g.title, g.author, g.cover)) { vm.openGutenberg(g) } }
+                    else item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(vm.gutResults.take(6), key = { "g" + it.id }) { g -> BookCard(Book("gut:${g.id}", "gutenberg", g.title, g.author, g.cover), Modifier.width(cardWidth())) { vm.openGutenberg(g) } }
+                            if (vm.gutResults.size > 6) item { Box(Modifier.width(90.dp).height(120.dp), Alignment.Center) { TextButton({ vm.setFilter(3) }) { Text("All ${vm.gutResults.size}") } } }
+                        }
+                    }
                 }
                 if (vm.results.isNotEmpty()) {
                     if (vm.gutResults.isNotEmpty()) item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) { Text("Audiobooks, YouTube and torrents", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(4.dp, 8.dp, 4.dp, 0.dp)) }
@@ -400,10 +408,23 @@ fun DetailScreen(vm: VM, b: Book, onBack: (() -> Unit)?) {
                 if (b.addonId == "local" && vm.hasBook(b.id)) FilledTonalButton({ vm.openBook(b) }) {
                     Icon(Icons.Rounded.MenuBook, null); Spacer(Modifier.width(4.dp)); Text("Read along")
                 }
+                if (Downloads.canDownload(b)) {
+                    val ctx = androidx.compose.ui.platform.LocalContext.current
+                    val have = Downloads.isDownloaded(ctx, b)
+                    val busy = Downloads.active == b.key
+                    FilledTonalButton({ if (busy) Downloads.cancel() else if (have) Downloads.remove(ctx, b) else Downloads.start(ctx, b) }, enabled = busy || have || Downloads.active == null) {
+                        when {
+                            busy -> { CircularProgressIndicator({ Downloads.progress }, Modifier.size(18.dp), color = VoxRed, strokeWidth = 2.dp); Spacer(Modifier.width(6.dp)); Text("${(Downloads.progress * 100).toInt()}%") }
+                            have -> { Icon(Icons.Rounded.DownloadDone, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Offline · ${Downloads.sizeMb(ctx, b)} MB") }
+                            else -> { Icon(Icons.Rounded.Download, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Download") }
+                        }
+                    }
+                }
                 IconButton({ vm.toggleFinished(b) }) {
                     Icon(Icons.Rounded.TaskAlt, "Mark finished", tint = if (vm.isFinished(b)) VoxRed else MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
+            Downloads.message?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(16.dp, 8.dp, 16.dp, 0.dp)) }
             if (playingThis) vm.torrentStatus?.let {
                 Text("⬇ $it", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(16.dp, 8.dp, 16.dp, 0.dp))
@@ -421,7 +442,10 @@ fun DetailScreen(vm: VM, b: Book, onBack: (() -> Unit)?) {
                     style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 16.dp))
             }
-            vm.detailError?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp)) }
+            vm.detailError?.let {
+                Text(if (it.contains("HTTP 5")) "The source is busy right now. Try again in a moment." else it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp, 16.dp, 16.dp, 0.dp))
+                TextButton({ vm.open(b.copy(chapters = emptyList())) }, Modifier.padding(horizontal = 8.dp)) { Icon(Icons.Rounded.Refresh, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Retry") }
+            }
         }
         itemsIndexed(b.chapters) { i, ch ->
             val current = playingThis && vm.chapter == i
