@@ -29,6 +29,7 @@ fun VoxApp(vm: VM) {
     val rail = w >= 600
     val twoPane = w >= 640          // Fold unfolded: list + detail side by side
     val reading = vm.reading
+    val player = vm.playerOpen
     var tab by rememberSaveable { mutableIntStateOf(0) }
     // bottom bar: hides while you scroll down, comes back after a short scroll up (or at the top)
     var barVisible by remember { mutableStateOf(true) }
@@ -46,8 +47,7 @@ fun VoxApp(vm: VM) {
             }
         }
     }
-    LaunchedEffect(tab, vm.detail, reading) { barVisible = true; acc = 0f }
-    val player = vm.playerOpen
+    LaunchedEffect(tab, vm.detail, reading, player) { barVisible = true; acc = 0f }
 
     BackHandler(!player && vm.detail != null && !twoPane) { vm.closeDetail() }
 
@@ -57,19 +57,21 @@ fun VoxApp(vm: VM) {
                 if (rail) NavigationRail(Modifier.statusBarsPadding()) {
                     Spacer(Modifier.weight(1f))
                     tabs.forEachIndexed { i, t ->
-                        NavigationRailItem(tab == i, { tab = i }, { Icon(t.icon, t.label) }, label = { Text(t.label) })
+                        NavigationRailItem(tab == i, { vm.playerOpen = false; if (!twoPane) vm.closeDetail(); tab = i }, { Icon(t.icon, t.label) }, label = { Text(t.label) })
                     }
                     Spacer(Modifier.weight(1f))
                 }
                 Column(Modifier.weight(1f)) {
-                    Box(Modifier.weight(1f).nestedScroll(hideOnScroll), Alignment.TopCenter) { Box(Modifier.widthIn(max = 1500.dp)) { androidx.compose.animation.Crossfade(tab, animationSpec = androidx.compose.animation.core.tween(180), label = "tab") { t -> Content(vm, t, twoPane) { vm.openEbook(it) } } } }
-                    MiniPlayer(vm) { vm.playerOpen = true }
+                    // the player lives INSIDE this column, above the navigation: Home / Search / My Vox / Settings stay tappable and close the player
+                    if (player) Box(Modifier.weight(1f)) { FullPlayer(vm, bottomInset = rail) { vm.playerOpen = false } }
+                    else Box(Modifier.weight(1f).nestedScroll(hideOnScroll), Alignment.TopCenter) { Box(Modifier.widthIn(max = 1500.dp)) { androidx.compose.animation.Crossfade(tab, animationSpec = androidx.compose.animation.core.tween(180), label = "tab") { t -> Content(vm, t, twoPane) { vm.openEbook(it) } } } }
+                    if (!player) MiniPlayer(vm) { vm.playerOpen = true }
                     if (!rail) androidx.compose.animation.AnimatedVisibility(barVisible,
                         enter = androidx.compose.animation.expandVertically(androidx.compose.animation.core.tween(220)) + fadeIn(androidx.compose.animation.core.tween(200)),
                         exit = androidx.compose.animation.shrinkVertically(androidx.compose.animation.core.tween(220)) + fadeOut(androidx.compose.animation.core.tween(160))) {
                         NavigationBar {
                             tabs.forEachIndexed { i, t ->
-                                NavigationBarItem(tab == i, { tab = i }, { Icon(t.icon, t.label) }, label = { Text(t.label) })
+                                NavigationBarItem(tab == i, { vm.playerOpen = false; if (!twoPane) vm.closeDetail(); tab = i }, { Icon(t.icon, t.label) }, label = { Text(t.label) })
                             }
                         }
                     }
@@ -99,9 +101,6 @@ fun VoxApp(vm: VM) {
                 }
             }
             if (!vm.onboarded) Onboarding(vm)
-            if (player) run {
-                FullPlayer(vm) { vm.playerOpen = false }
-            }
         }
     }
 }

@@ -156,7 +156,7 @@ fun SearchScreen(vm: VM, onOpen: (Book) -> Unit) {
         Row(Modifier.padding(16.dp, 12.dp, 16.dp, 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(
                 value = vm.query, onValueChange = vm::search, singleLine = true, modifier = Modifier.weight(1f),
-                placeholder = { Text("Search books, audio, YouTube…", maxLines = 1) },
+                placeholder = { Text("Search everything", maxLines = 1) },
                 leadingIcon = { Icon(Icons.Rounded.Search, null) },
                 trailingIcon = { if (vm.query.isNotEmpty()) IconButton({ vm.search("") }) { Icon(Icons.Rounded.Close, null) } },
             )

@@ -2,10 +2,11 @@
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp" android:height="108dp"
     android:viewportWidth="108" android:viewportHeight="108">
-    <!-- top half of a folded page -->
+    <!-- headphones -->
     <path android:fillColor="#FFFFFF"
-        android:pathData="M34,30 L74,30 L74,53 L34,53 Z" />
-    <!-- lower half, slightly darker, like the flap mid-turn -->
-    <path android:fillColor="#FFD9D5"
-        android:pathData="M34,55 L74,55 L74,78 L34,78 Z" />
+        android:pathData="M54,26c-15.5,0 -28,12.5 -28,28v18c0,3.3 2.7,6 6,6h6c1.7,0 3,-1.3 3,-3V58c0,-1.7 -1.3,-3 -3,-3h-6v-1c0,-12.2 9.8,-22 22,-22s22,9.8 22,22v1h-6c-1.7,0 -3,1.3 -3,3v17c0,1.7 1.3,3 3,3h6c3.3,0 6,-2.7 6,-6V54C82,38.5 69.5,26 54,26z" />
+    <!-- sound bars between the cups: the book being read aloud -->
+    <path android:fillColor="#FFFFFF" android:pathData="M45,52h4v14h-4z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M52,44h4v30h-4z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M59,49h4v20h-4z" />
 </vector>

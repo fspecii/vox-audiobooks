@@ -51,7 +51,7 @@ fun MiniPlayer(vm: VM, onExpand: () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun FullPlayer(vm: VM, onClose: () -> Unit) {
+fun FullPlayer(vm: VM, bottomInset: Boolean = false, onClose: () -> Unit) {
     val b = vm.nowBook ?: run { onClose(); return }
     var drag by remember { mutableStateOf<Float?>(null) }
     var speedMenu by remember { mutableStateOf(false) }
@@ -140,7 +140,7 @@ fun FullPlayer(vm: VM, onClose: () -> Unit) {
             if (b.cover != null) coil.compose.AsyncImage(b.cover, null, Modifier.fillMaxSize().blur(60.dp), contentScale = androidx.compose.ui.layout.ContentScale.Crop, alpha = .35f)
             Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Brush.verticalGradient(listOf(androidx.compose.ui.graphics.Color(0x66000000), MaterialTheme.colorScheme.background))))
         }
-        BoxWithConstraints(Modifier.fillMaxSize().systemBarsPadding()) {
+        BoxWithConstraints(Modifier.fillMaxSize().statusBarsPadding().then(if (bottomInset) Modifier.navigationBarsPadding() else Modifier)) {
             val sideBySide = maxWidth >= 600.dp && maxWidth > maxHeight * 0.85f
             Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
