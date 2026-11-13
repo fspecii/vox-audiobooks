@@ -14,9 +14,22 @@ import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream
 import java.io.File
 
-data class Voice(val id: String, val label: String, val lang: String)
+/** kind "piper" = Piper VITS voice (one language each); kind "st3" = Supertonic 3 (31 languages, shared download). */
+data class Voice(val id: String, val label: String, val lang: String, val kind: String = "piper", val sid: Int = 0, val sizeMb: Int = 65) {
+    val assetId get() = if (kind == "st3") "supertonic3" else id
+}
 
-/** Piper voices (VITS) run on-device through sherpa-onnx; each voice is a ~65 MB download, fetched once. */
+/** One loaded model + how to call it. Not thread-safe: use one Synth per worker. */
+class Synth(val tts: OfflineTts, val voice: Voice, val lang: String) {
+    val rate = tts.sampleRate()
+    fun speak(text: String, speed: Float): FloatArray =
+        if (voice.kind == "st3") tts.generateWithConfig(text, GenerationConfig(speed = speed, sid = voice.sid, numSteps = 5,
+            extra = mapOf("lang" to if (lang in Voices.st3Langs) lang else "en"))).samples
+        else tts.generate(text, 0, speed).samples
+    fun release() = runCatching { tts.release() }
+}
+
+/** Piper voices (VITS) and Supertonic 3 run on-device through sherpa-onnx; each is downloaded once. */
 object Voices {
     val all = listOf(
         Voice("en_US-lessac-medium", "English (US) · Lessac", "en"),
@@ -26,11 +39,15 @@ object Voices {
         Voice("de_DE-thorsten-medium", "Deutsch · Thorsten", "de"),
         Voice("fr_FR-siwis-medium", "Français · Siwis", "fr"),
         Voice("es_ES-davefx-medium", "Español · Davefx", "es"),
+        Voice("supertonic3-a", "Supertonic 3 · any language (A)", "*", "st3", 0, 129),
+        Voice("supertonic3-b", "Supertonic 3 · any language (B)", "*", "st3", 5, 129),
     )
+    val st3Langs = setOf("en", "ko", "ja", "ar", "bg", "cs", "da", "de", "el", "es", "et", "fi", "fr", "hi", "hr", "hu", "id", "it", "lt", "lv", "nl", "pl", "pt", "ro", "ru", "sk", "sl", "sv", "tr", "uk", "vi")
     private lateinit var app: Context
-    fun init(ctx: Context) { if (!::app.isInitialized) app = ctx.applicationContext }
+    fun init(ctx: Context) { if (!::app.isInitialized) app = ctx.applicationContext; Tuner.init(ctx) }
+    fun byId(id: String) = all.firstOrNull { it.id == id }
     fun forLang(lang: String) = all.firstOrNull { it.lang == lang } ?: all[0]
-    fun dir(id: String) = File(app.filesDir, "voices/$id")
+    fun dir(id: String) = File(app.filesDir, "voices/${byId(id)?.assetId ?: id}")
     fun installed(id: String) = File(dir(id), ".ok").exists()
 
     var installing by mutableStateOf<String?>(null); private set
@@ -40,9 +57,10 @@ object Voices {
     suspend fun install(id: String) = withContext(Dispatchers.IO) {
         if (installed(id)) return@withContext
         installing = id; progress = 0f; error = null
-        val tmp = File(app.cacheDir, "$id.tar.bz2")
+        val tmp = File(app.cacheDir, "${byId(id)?.assetId ?: id}.tar.bz2")
         try {
-            val url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-$id.tar.bz2"
+            val url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/" +
+                if (byId(id)?.kind == "st3") "sherpa-onnx-supertonic-3-tts-int8-2026-05-11.tar.bz2" else "vits-piper-$id.tar.bz2"
             Http.client.newBuilder().readTimeout(60, java.util.concurrent.TimeUnit.SECONDS).build()
                 .newCall(Request.Builder().url(url).header("User-Agent", "Vox").build()).execute().use { r ->
                     if (!r.isSuccessful) error("HTTP ${r.code}")
@@ -69,15 +87,30 @@ object Voices {
         finally { tmp.delete(); installing = null }
     }
 
-    private var engine: Pair<String, OfflineTts>? = null
-    @Synchronized fun engine(id: String): OfflineTts {
-        engine?.takeIf { it.first == id }?.let { return it.second }
-        engine?.second?.release()
+    /** A fresh, independent model instance (use several for parallel generation). */
+    fun newSynth(id: String, lang: String, threads: Int): Synth {
+        val v = byId(id) ?: error("Unknown voice")
         val root = dir(id)
-        val onnx = root.listFiles { f -> f.name.endsWith(".onnx") }!!.first()
-        val vits = OfflineTtsVitsModelConfig(model = onnx.path, tokens = File(root, "tokens.txt").path, dataDir = File(root, "espeak-ng-data").path)
-        val cfg = OfflineTtsConfig(model = OfflineTtsModelConfig(vits = vits, numThreads = 4, debug = false, provider = "cpu"))
-        return OfflineTts(config = cfg).also { engine = id to it }
+        val model = if (v.kind == "st3") {
+            fun f(n: String) = File(root, n).path
+            OfflineTtsModelConfig(supertonic = OfflineTtsSupertonicModelConfig(f("duration_predictor.int8.onnx"), f("text_encoder.int8.onnx"),
+                f("vector_estimator.int8.onnx"), f("vocoder.int8.onnx"), f("tts.json"), f("unicode_indexer.bin"), f("voice.bin")),
+                numThreads = threads, debug = false, provider = "cpu")
+        } else {
+            val onnx = root.listFiles { f -> f.name.endsWith(".onnx") }!!.first()
+            OfflineTtsModelConfig(vits = OfflineTtsVitsModelConfig(model = onnx.path, tokens = File(root, "tokens.txt").path, dataDir = File(root, "espeak-ng-data").path),
+                numThreads = threads, debug = false, provider = "cpu")
+        }
+        return Synth(OfflineTts(config = OfflineTtsConfig(model = model)), v, lang)
+    }
+
+    private var cached: Triple<String, Int, Synth>? = null
+    /** Shared instance for live narration (2 threads is the sweet spot for these models unless the speed test says otherwise). */
+    @Synchronized fun synth(id: String, lang: String): Synth {
+        val th = Tuner.best(byId(id)?.kind ?: "piper")?.threads ?: 2
+        cached?.takeIf { it.first == id && it.second == th }?.let { return Synth(it.third.tts, it.third.voice, lang) }
+        cached?.third?.release()
+        val s = newSynth(id, lang, th); cached = Triple(id, th, s); return s
     }
 }
 
@@ -140,6 +173,7 @@ object Narrator {
     private class Chunk(val chapter: Int, val range: IntRange, val pcm: ShortArray)
 
     fun start(ctx: Context, book: EBook, plain: List<String>, fromChapter: Int, fromOffset: Int, voiceId: String) {
+        val lang = book.lang
         val old = job
         stopInternal()
         val my = ++gen
@@ -149,16 +183,16 @@ object Narrator {
         NarrationService.start(app)
         job = scope.launch {
             old?.join()                         // the previous run must finish releasing its AudioTrack before we create ours
-            try { run(app, plain, fromChapter, fromOffset, voiceId) }
+            try { run(app, plain, fromChapter, fromOffset, voiceId, lang) }
             catch (e: CancellationException) { throw e }
             catch (e: Throwable) { if (gen == my) message = "Narration failed: ${e.message}" }
             finally { release(); if (gen == my) { state = S.Idle; cursor = null } }
         }
     }
 
-    private suspend fun run(ctx: Context, plain: List<String>, fromChapter: Int, fromOffset: Int, voiceId: String) = coroutineScope {
-        val tts = Voices.engine(voiceId)
-        val rate = tts.sampleRate()
+    private suspend fun run(ctx: Context, plain: List<String>, fromChapter: Int, fromOffset: Int, voiceId: String, lang: String) = coroutineScope {
+        val sy = Voices.synth(voiceId, lang)
+        val rate = sy.rate
         val minBuf = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val t = AudioTrack.Builder()
             .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
@@ -177,10 +211,10 @@ object Narrator {
                 for (s in Sentences.split(text)) {
                     if (ci == fromChapter && s.end <= fromOffset) continue
                     val t0 = System.nanoTime()
-                    val g = tts.generate(text.substring(s.start, s.end).replace('\n', ' '), 0, speed)
-                    android.util.Log.d("VoxTts", "chapter $ci ${s.start}-${s.end}: ${g.samples.size * 1000L / rate} ms audio in ${(System.nanoTime() - t0) / 1_000_000} ms")
+                    val g = sy.speak(text.substring(s.start, s.end).replace('\n', ' '), speed)
+                    android.util.Log.d("VoxTts", "chapter $ci ${s.start}-${s.end}: ${g.size * 1000L / rate} ms audio in ${(System.nanoTime() - t0) / 1_000_000} ms")
                     val gap = ShortArray(rate * 12 / 100)
-                    q.send(Chunk(ci, s.start until s.end, g.samples.toPcm() + gap))
+                    q.send(Chunk(ci, s.start until s.end, g.toPcm() + gap))
                 }
             }
             q.close()
@@ -305,8 +339,13 @@ object Converter {
         bookId = book.id; progress = 0f; status = "Preparing voice…"; total = book.chapters.size
         NarrationService.start(app)
         job = scope.launch {
+            var pool: List<Synth> = emptyList()
             try {
-                val tts = Voices.engine(voiceId); val rate = tts.sampleRate()
+                val cfg = Tuner.best(Voices.byId(voiceId)?.kind ?: "piper") ?: Tuner.Config(2, 2, 0.0)
+                status = "Loading voice…"
+                pool = List(cfg.workers) { Voices.newSynth(voiceId, book.lang, cfg.threads) }
+                val rate = pool[0].rate
+                val free = Channel<Synth>(pool.size); pool.forEach { free.trySend(it) }
                 val dir = audiobookDir(app, book.id).apply { mkdirs() }
                 val cover = Ebooks.coverFile(book.id)?.let { "file://${it.path}" }
                 // resume: keep chapters that are already complete
@@ -322,17 +361,30 @@ object Converter {
                     ensureActive()
                     val ch = book.chapters[ci]
                     val text = ch.title + "\n \n" + ch.paras.joinToString("\n") + "\n"
+                    val chStart = System.currentTimeMillis()
                     val f = File(dir, "%03d.m4a".format(ci + 1)); val w = AacWriter(f.path, rate)
                     status = "Chapter ${ci + 1} of ${book.chapters.size}"
                     val map = ArrayList<LongArray>()
-                    for (s in Sentences.split(text)) {
+                    // sentences are synthesised in parallel (one model instance per worker) and written in order
+                    val sents = Sentences.split(text)
+                    var k = 0
+                    while (k < sents.size) {
                         ensureActive()
-                        map.add(longArrayOf(w.ms, s.start.toLong(), s.end.toLong()))
-                        w.write(tts.generate(text.substring(s.start, s.end).replace('\n', ' '), 0, 1f).samples.toPcm())
-                        w.write(ShortArray(rate * 15 / 100))
-                        done += s.end - s.start; progress = (done.toFloat() / totalChars).coerceAtMost(1f)
+                        val batch = sents.subList(k, minOf(k + cfg.workers * 3, sents.size)); k += batch.size
+                        val pcms = coroutineScope {
+                            batch.map { s -> async(Dispatchers.Default) {
+                                val sy = free.receive()
+                                try { sy.speak(text.substring(s.start, s.end).replace('\n', ' '), 1f).toPcm() } finally { free.send(sy) }
+                            } }.awaitAll()
+                        }
+                        batch.forEachIndexed { j, s ->
+                            map.add(longArrayOf(w.ms, s.start.toLong(), s.end.toLong()))
+                            w.write(pcms[j]); w.write(ShortArray(rate * 15 / 100))
+                            done += s.end - s.start; progress = (done.toFloat() / totalChars).coerceAtMost(1f)
+                        }
                     }
                     val secs = w.seconds; w.finish()
+                    android.util.Log.d("VoxConv", "chapter ${ci + 1}: ${secs}s audio in ${(System.currentTimeMillis() - chStart) / 1000}s with ${cfg.workers}x${cfg.threads}")
                     SyncMap.write(SyncMap.file(app, book.id, ci), map)
                     chapters.put(org.json.JSONObject().put("title", ch.title).put("file", f.path).put("sec", secs))
                     writeJson(dir, book, cover, chapters)
@@ -342,9 +394,58 @@ object Converter {
                 status = "Done"; progress = 1f
             } catch (e: CancellationException) { status = "Paused: reopen the book and tap convert to continue"
             } catch (e: Throwable) { status = "Conversion failed: ${e.message}"
-            } finally { bookId = null }
+            } finally { pool.forEach { it.release() }; bookId = null }
         }
     }
 
     fun cancel() { job?.cancel() }
+}
+
+/** Measures this phone: which number of parallel model instances x threads synthesises fastest. Result is kept per engine kind. */
+object Tuner {
+    data class Config(val workers: Int, val threads: Int, val xrt: Double)
+    var status by mutableStateOf<String?>(null); private set
+    var running by mutableStateOf(false); private set
+    private lateinit var store: dev.vox.audio.data.Store
+    fun init(ctx: Context) { if (!::store.isInitialized) store = dev.vox.audio.data.Store(ctx.applicationContext) }
+
+    fun best(kind: String): Config? = if (!::store.isInitialized) null else store.tuneRaw(kind)?.split(':')?.let {
+        runCatching { Config(it[0].toInt(), it[1].toInt(), it[2].toDouble()) }.getOrNull()
+    }
+
+    private val en = listOf("It was a bright cold day in April, and the clocks were striking thirteen.",
+        "Winston Smith slipped quickly through the glass doors of Victory Mansions, though not quickly enough to prevent a swirl of gritty dust from entering along with him.",
+        "The hallway smelt of boiled cabbage and old rag mats, and at one end of it a coloured poster had been tacked to the wall.")
+    private val ro = listOf("Era o zi rece și senină de aprilie, iar ceasurile băteau ora treisprezece.",
+        "Winston Smith se strecură repede prin ușile de sticlă ale clădirii, dar nu destul de repede ca să nu intre odată cu el un vârtej de praf.",
+        "Holul mirosea a varză fiartă și a covoare vechi, iar la capătul lui un afiș colorat fusese bătut în cuie pe perete.")
+
+    suspend fun run(voiceId: String) = withContext(Dispatchers.Default) {
+        val v = Voices.byId(voiceId) ?: return@withContext
+        if (running) return@withContext
+        running = true
+        try {
+            val lang = if (v.lang == "*") "en" else v.lang
+            val text = if (lang == "ro") ro else en
+            val cores = Runtime.getRuntime().availableProcessors()
+            val plan = listOf(2 to listOf(1, 2, 3, 4), 1 to listOf(4, 6, 8), 4 to listOf(1, 2)).map { (th, ws) -> th to ws.filter { it * th <= cores + 2 } }
+            var bestCfg: Config? = null
+            for ((th, workers) in plan) {
+                if (workers.isEmpty()) continue
+                status = "Loading ${workers.max()} × $th-thread models…"
+                val engines = List(workers.max()) { Voices.newSynth(voiceId, lang, th) }
+                engines.forEach { runCatching { it.speak("Warm up.", 1f) } }
+                for (w in workers) {
+                    status = "Testing $w parallel × $th threads…"
+                    val t0 = System.nanoTime()
+                    val audio = coroutineScope { engines.take(w).map { e -> async { text.sumOf { e.speak(it, 1f).size.toLong() } * 1000 / e.rate } }.awaitAll().sum() }
+                    val xrt = audio / ((System.nanoTime() - t0) / 1_000_000.0)
+                    android.util.Log.d("VoxTune", "${v.kind} workers=$w threads=$th audio=${audio}ms wall=${(System.nanoTime() - t0) / 1_000_000}ms x=${"%.1f".format(xrt)}")
+                    if (bestCfg == null || xrt > bestCfg.xrt * 1.04) bestCfg = Config(w, th, xrt)
+                }
+                engines.forEach { it.release() }
+            }
+            bestCfg?.let { store.setTuneRaw(v.kind, "${it.workers}:${it.threads}:${it.xrt}"); status = null }
+        } catch (e: Throwable) { status = "Speed test failed: ${e.message}" } finally { running = false }
+    }
 }

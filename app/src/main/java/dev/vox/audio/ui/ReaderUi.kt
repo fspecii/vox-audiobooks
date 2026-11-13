@@ -323,7 +323,7 @@ fun ReaderScreen(vm: VM, id: String, onClose: () -> Unit) {
                         TextButton({ voiceMenu = true }) { Text(Voices.all.firstOrNull { it.id == voiceId }?.label?.substringAfter("· ", "")?.ifBlank { null } ?: "Voice", color = th.paper) }
                         DropdownMenu(voiceMenu, { voiceMenu = false }) {
                             Voices.all.forEach { v ->
-                                DropdownMenuItem({ Text(v.label + if (Voices.installed(v.id)) "" else "  ·  65 MB") },
+                                DropdownMenuItem({ Text(v.label + if (Voices.installed(v.id)) "" else "  ·  ${v.sizeMb} MB") },
                                     { vm.setVoice(v.id); voiceMenu = false },
                                     leadingIcon = { if (v.id == voiceId) Icon(Icons.Rounded.Check, null) })
                             }

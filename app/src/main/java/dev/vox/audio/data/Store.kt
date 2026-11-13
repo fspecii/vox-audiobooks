@@ -68,6 +68,9 @@ class Store(ctx: Context) {
         get() = p.getLong("updChecked", 0L)
         set(v) = p.edit().putLong("updChecked", v).apply()
 
+    fun tuneRaw(kind: String): String? = p.getString("tune:$kind", null)
+    fun setTuneRaw(kind: String, v: String) = p.edit().putString("tune:$kind", v).apply()
+
     // ---- reader
     fun readPos(id: String): Pair<Int, Int>? = p.getString("rd:$id", null)?.split(':')?.let { (it.getOrNull(0)?.toIntOrNull() ?: 0) to (it.getOrNull(1)?.toIntOrNull() ?: 0) }
     fun setReadPos(id: String, chapter: Int, offset: Int) = p.edit().putString("rd:$id", "$chapter:$offset").apply()

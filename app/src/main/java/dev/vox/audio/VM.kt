@@ -153,6 +153,11 @@ class VM(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun testSpeed() = viewModelScope.launch {
+        val id = voiceId.ifBlank { dev.vox.audio.reader.Voices.all[0].id }
+        if (!dev.vox.audio.reader.Voices.installed(id)) dev.vox.audio.reader.Voices.install(id)
+        if (dev.vox.audio.reader.Voices.installed(id)) dev.vox.audio.reader.Tuner.run(id)
+    }
     var voiceId by mutableStateOf(store.voice)            // "" = automatic (match the book's language)
     fun setVoice(id: String) { voiceId = id; store.voice = id
         if (id.isNotBlank() && !dev.vox.audio.reader.Voices.installed(id)) viewModelScope.launch { dev.vox.audio.reader.Voices.install(id) } }

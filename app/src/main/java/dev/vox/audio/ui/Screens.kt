@@ -271,7 +271,7 @@ fun AddonsScreen(vm: VM) {
                         DropdownMenu(voiceMenu, { voiceMenu = false }) {
                             DropdownMenuItem({ Text("Automatic") }, { vm.setVoice(""); voiceMenu = false }, leadingIcon = { if (auto) Icon(Icons.Rounded.Check, null) })
                             dev.vox.audio.reader.Voices.all.forEach { v ->
-                                DropdownMenuItem({ Text(v.label + if (dev.vox.audio.reader.Voices.installed(v.id)) "" else "  ·  65 MB download") },
+                                DropdownMenuItem({ Text(v.label + if (dev.vox.audio.reader.Voices.installed(v.id)) "" else "  ·  ${v.sizeMb} MB download") },
                                     { vm.setVoice(v.id); voiceMenu = false }, leadingIcon = { if (v.id == vm.voiceId) Icon(Icons.Rounded.Check, null) })
                             }
                         }
@@ -279,6 +279,25 @@ fun AddonsScreen(vm: VM) {
                 },
             )
             dev.vox.audio.reader.Voices.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+            val tuneKind = dev.vox.audio.reader.Voices.byId(vm.voiceId)?.kind ?: "piper"
+            val tuned = dev.vox.audio.reader.Tuner.best(tuneKind)
+            val testing = dev.vox.audio.reader.Tuner.running
+            ListItem(
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                headlineContent = { Text("Conversion speed") },
+                supportingContent = {
+                    Text(when {
+                        testing -> dev.vox.audio.reader.Tuner.status ?: "Testing…"
+                        tuned != null -> "%.1fx real-time (%d parallel x %d threads). A 10 hour book converts in about %d min."
+                            .format(tuned.xrt, tuned.workers, tuned.threads, (600 / tuned.xrt).toInt())
+                        else -> "Not measured yet. The test finds the fastest setup for this phone (about a minute)."
+                    })
+                },
+                trailingContent = {
+                    if (testing) CircularProgressIndicator(Modifier.size(24.dp), color = VoxRed)
+                    else TextButton({ vm.testSpeed() }) { Text(if (tuned == null) "Test" else "Re-test") }
+                },
+            )
             ListItem(
                 colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                 headlineContent = { Text("Skip silence") },

@@ -16,6 +16,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge(androidx.activity.SystemBarStyle.dark(android.graphics.Color.TRANSPARENT), androidx.activity.SystemBarStyle.dark(android.graphics.Color.TRANSPARENT))
         handle(intent)
+        if (intent?.getBooleanExtra("bench", false) == true) { dev.vox.audio.reader.Voices.init(this); dev.vox.audio.reader.Bench.run(this) }
         setContent { VoxTheme { VoxApp(vm) } }
     }
 
