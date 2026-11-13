@@ -14,6 +14,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.foundation.background
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
@@ -63,7 +65,7 @@ fun VoxApp(vm: VM) {
                 }
                 Column(Modifier.weight(1f)) {
                     // the player lives INSIDE this column, above the navigation: Home / Search / My Vox / Settings stay tappable and close the player
-                    if (player) Box(Modifier.weight(1f)) { FullPlayer(vm, bottomInset = rail) { vm.playerOpen = false } }
+                    if (player) Box(Modifier.weight(1f).clipToBounds().background(MaterialTheme.colorScheme.background)) { FullPlayer(vm, bottomInset = rail) { vm.playerOpen = false } }
                     else Box(Modifier.weight(1f).nestedScroll(hideOnScroll), Alignment.TopCenter) { Box(Modifier.widthIn(max = 1500.dp)) { androidx.compose.animation.Crossfade(tab, animationSpec = androidx.compose.animation.core.tween(180), label = "tab") { t -> Content(vm, t, twoPane) { vm.openEbook(it) } } } }
                     if (!player) MiniPlayer(vm) { vm.playerOpen = true }
                     if (!rail) androidx.compose.animation.AnimatedVisibility(barVisible,
@@ -108,9 +110,15 @@ fun VoxApp(vm: VM) {
 @Composable
 private fun Content(vm: VM, tab: Int, twoPane: Boolean, onRead: (String) -> Unit) {
     val detail = vm.detail
-    if (tab == 3) { AddonsScreen(vm); return }
+    // forms and lists get a readable column on big screens instead of stretching edge to edge
+    fun narrow(max: androidx.compose.ui.unit.Dp, c: @Composable () -> Unit): @Composable () -> Unit = { Box(Modifier.fillMaxSize(), Alignment.TopCenter) { Box(Modifier.widthIn(max = max).fillMaxSize()) { c() } } }
+    if (tab == 3) { narrow(780.dp) { AddonsScreen(vm) }(); return }
     val list: @Composable () -> Unit = {
-        when (tab) { 0 -> HomeScreen(vm) { vm.open(it) }; 1 -> SearchScreen(vm) { vm.open(it) }; else -> MyListScreen(vm) { vm.open(it) } }
+        when (tab) {
+            0 -> HomeScreen(vm) { vm.open(it) }
+            1 -> narrow(1100.dp) { SearchScreen(vm) { vm.open(it) } }()
+            else -> narrow(1100.dp) { MyListScreen(vm) { vm.open(it) } }()
+        }
     }
     if (twoPane) {
         // wide screens: full-width browsing, and a book opens as a centred modal card (like Netflix's title sheet)

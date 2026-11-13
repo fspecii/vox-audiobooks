@@ -256,7 +256,7 @@ fun AddonsScreen(vm: VM) {
     LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(16.dp)) {
         item {
             Text("Settings", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(20.dp))
             Text("Addons", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Text("Addons add catalogs of audiobooks. Paste a manifest URL (https:// or stremio://) from a source you trust.",
                 style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)

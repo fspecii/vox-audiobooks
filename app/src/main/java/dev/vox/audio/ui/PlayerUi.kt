@@ -49,7 +49,7 @@ fun MiniPlayer(vm: VM, onExpand: () -> Unit) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun FullPlayer(vm: VM, bottomInset: Boolean = false, onClose: () -> Unit) {
     val b = vm.nowBook ?: run { onClose(); return }
@@ -98,7 +98,7 @@ fun FullPlayer(vm: VM, bottomInset: Boolean = false, onClose: () -> Unit) {
                 IconButton({ vm.skip(30_000) }) { Icon(Icons.Rounded.Forward30, "Forward 30s") }
                 IconButton({ vm.next() }) { Icon(Icons.Rounded.SkipNext, "Next") }
             }
-            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            androidx.compose.foundation.layout.FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Box {
                     AssistChip({ speedMenu = true }, { Text("${vm.speed}x") }, leadingIcon = { Icon(Icons.Rounded.Speed, null) })
                     DropdownMenu(speedMenu, { speedMenu = false }) {
@@ -129,8 +129,8 @@ fun FullPlayer(vm: VM, bottomInset: Boolean = false, onClose: () -> Unit) {
     LaunchedEffect(Unit) { dragY.animateTo(0f, androidx.compose.animation.core.spring(dampingRatio = .85f, stiffness = 380f)) }
     androidx.activity.compose.BackHandler(true) { requestClose() }
     val dismissState = androidx.compose.foundation.gestures.rememberDraggableState { d -> if (!closing) scopeP.launch { dragY.snapTo((dragY.value + d).coerceAtLeast(0f)) } }
-    Surface(Modifier.fillMaxSize()
-        .graphicsLayer { translationY = dragY.value; val f = (dragY.value / hPx).coerceIn(0f, 1f); alpha = 1f - f * .5f; scaleX = 1f - f * .05f; scaleY = 1f - f * .05f }
+    Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()
+        .graphicsLayer { translationY = dragY.value }      // opaque and rigid: nothing of the page underneath may show through while it moves
         .draggable(dismissState, androidx.compose.foundation.gestures.Orientation.Vertical, onDragStopped = { v ->
             if (dragY.value > 320f || v > 1600f) requestClose()
             else dragY.animateTo(0f, androidx.compose.animation.core.spring(dampingRatio = .75f, stiffness = 400f))
@@ -152,7 +152,7 @@ fun FullPlayer(vm: VM, bottomInset: Boolean = false, onClose: () -> Unit) {
                 if (sideBySide) Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.weight(1f).fillMaxHeight().padding(16.dp), Alignment.Center) {
                         BoxWithConstraints(Modifier.fillMaxSize(), Alignment.Center) {
-                            val side = minOf(maxWidth, maxHeight, 520.dp)
+                            val side = minOf(maxWidth, maxHeight, 640.dp)
                             GestureCover(vm, b.cover, side)
                         }
                     }
