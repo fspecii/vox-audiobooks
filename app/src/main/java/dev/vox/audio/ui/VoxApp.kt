@@ -71,7 +71,9 @@ private fun Content(vm: VM, tab: Int, twoPane: Boolean, onRead: (String) -> Unit
         Box(Modifier.weight(1.1f)) { list() }
         VerticalDivider()
         Box(Modifier.weight(1f)) {
+            val fallback = vm.nowBook ?: vm.continueList.firstOrNull { it.addonId != "ebook" }
             if (detail != null) DetailScreen(vm, detail, null)
+            else if (fallback != null) DetailScreen(vm, fallback, null)
             else Box(Modifier.fillMaxSize(), Alignment.Center) {
                 Text("Pick an audiobook", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }

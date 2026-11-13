@@ -89,8 +89,8 @@ class VM(app: Application) : AndroidViewModel(app) {
                 delay(500)
                 val c = controller ?: continue
                 position = c.currentPosition
-                duration = c.duration.takeIf { it != C.TIME_UNSET } ?: 0L
                 chapter = c.currentMediaItemIndex
+                duration = c.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: ((nowBook?.chapters?.getOrNull(chapter)?.durationSec ?: 0) * 1000L)
                 if (c.isPlaying && ++tick % 10 == 0) saveProgress()
                 if (tick % 4 == 0) torrentStatus = Torrents.statusFor(c.currentMediaItem?.localConfiguration?.uri?.toString())
                 if (sleepEndsAt > 0 && System.currentTimeMillis() >= sleepEndsAt) { c.pause(); sleepEndsAt = 0 }
@@ -363,7 +363,13 @@ class VM(app: Application) : AndroidViewModel(app) {
     private fun mediaItems(book: Book) = book.chapters.mapIndexed { i, ch ->
         MediaItem.Builder().setUri(ch.url).setMediaId("${book.key}#${if (book.addonId == "local" && ch.id >= 0) ch.id else i}")
             .setMediaMetadata(MediaMetadata.Builder().setTitle(ch.title).setArtist(book.author).setAlbumTitle(book.title)
-                .setArtworkUri(book.cover?.let { Uri.parse(it) }).build()).build()
+                .apply {
+                    val u = book.cover
+                    // private-file covers cannot be opened by SystemUI (lock screen / notification), so embed the bytes
+                    if (u != null && u.startsWith("file://")) runCatching { java.io.File(u.removePrefix("file://")).takeIf { it.length() < 1_500_000 }?.readBytes() }.getOrNull()
+                        ?.let { setArtworkData(it, MediaMetadata.PICTURE_TYPE_FRONT_COVER) } ?: setArtworkUri(Uri.parse(u))
+                    else setArtworkUri(u?.let { Uri.parse(it) })
+                }.build()).build()
     }
 
     fun play(book: Book, chapterIdx: Int = 0, posMs: Long = 0) {

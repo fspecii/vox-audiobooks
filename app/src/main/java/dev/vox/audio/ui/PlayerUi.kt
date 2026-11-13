@@ -1,6 +1,8 @@
 package dev.vox.audio.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
+import androidx.compose.ui.draw.blur
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -39,6 +41,7 @@ fun MiniPlayer(vm: VM, onExpand: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FullPlayer(vm: VM, onClose: () -> Unit) {
     val b = vm.nowBook ?: run { onClose(); return }
@@ -46,6 +49,7 @@ fun FullPlayer(vm: VM, onClose: () -> Unit) {
     var speedMenu by remember { mutableStateOf(false) }
     var sleepMenu by remember { mutableStateOf(false) }
     var marks by remember { mutableStateOf(false) }
+    var chapters by remember { mutableStateOf(false) }
     val sp = vm.speed.coerceAtLeast(0.5f)
 
     // Everything that matters (title, seek bar, transport, chips) lives in one block that is never clipped:
@@ -89,12 +93,18 @@ fun FullPlayer(vm: VM, onClose: () -> Unit) {
                             .forEach { (m, l) -> DropdownMenuItem({ Text(l) }, { vm.setSleep(m); sleepMenu = false }) }
                     }
                 }
+                AssistChip({ chapters = true }, { Text("Chapters") }, leadingIcon = { Icon(Icons.Rounded.FormatListBulleted, null) })
                 AssistChip({ vm.addBookmark() }, { Text("Bookmark") }, leadingIcon = { Icon(Icons.Rounded.BookmarkAdd, null) })
             }
         }
     }
 
     Surface(Modifier.fillMaxSize()) {
+        // the cover, blurred and darkened, tints the whole screen
+        Box(Modifier.fillMaxSize()) {
+            if (b.cover != null) coil.compose.AsyncImage(b.cover, null, Modifier.fillMaxSize().blur(60.dp), contentScale = androidx.compose.ui.layout.ContentScale.Crop, alpha = .35f)
+            Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Brush.verticalGradient(listOf(androidx.compose.ui.graphics.Color(0x66000000), MaterialTheme.colorScheme.background))))
+        }
         BoxWithConstraints(Modifier.fillMaxSize().systemBarsPadding()) {
             val sideBySide = maxWidth >= 600.dp && maxWidth > maxHeight * 0.85f
             Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp)) {
@@ -106,15 +116,38 @@ fun FullPlayer(vm: VM, onClose: () -> Unit) {
                 }
                 if (sideBySide) Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.weight(1f).fillMaxHeight().padding(16.dp), Alignment.Center) {
-                        Cover(b.cover, Modifier.fillMaxHeight().aspectRatio(1f, matchHeightConstraintsFirst = true).sizeIn(maxWidth = 520.dp, maxHeight = 520.dp), 20.dp)
+                        BoxWithConstraints(Modifier.fillMaxSize(), Alignment.Center) {
+                            val side = minOf(maxWidth, maxHeight, 520.dp)
+                            Cover(b.cover, Modifier.size(side), 20.dp)
+                        }
                     }
                     controls(Modifier.weight(1f).widthIn(max = 560.dp).verticalScroll(rememberScrollState()).padding(16.dp))
                 } else Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
                     Box(Modifier.weight(1f).fillMaxWidth().padding(8.dp), Alignment.Center) {
-                        Cover(b.cover, Modifier.fillMaxHeight().aspectRatio(1f, matchHeightConstraintsFirst = true).sizeIn(maxWidth = 480.dp, maxHeight = 480.dp), 20.dp)
+                        BoxWithConstraints(Modifier.fillMaxSize(), Alignment.Center) {
+                            val side = minOf(maxWidth, maxHeight, 520.dp)
+                            Cover(b.cover, Modifier.size(side), 20.dp)
+                        }
                     }
                     controls(Modifier.fillMaxWidth().widthIn(max = 560.dp).padding(bottom = 8.dp))
                 }
+            }
+        }
+    }
+
+    if (chapters) ModalBottomSheet({ chapters = false }, containerColor = MaterialTheme.colorScheme.surface) {
+        Text(b.title, style = MaterialTheme.typography.titleMedium, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 20.dp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        val state = androidx.compose.foundation.lazy.rememberLazyListState(maxOf(0, vm.chapter - 2))
+        LazyColumn(state = state, contentPadding = PaddingValues(bottom = 24.dp)) {
+            items(b.chapters.size) { i ->
+                val c = b.chapters[i]; val cur = i == vm.chapter
+                ListItem(
+                    colors = ListItemDefaults.colors(containerColor = androidx.compose.ui.graphics.Color.Transparent),
+                    leadingContent = { if (cur) Icon(Icons.Rounded.GraphicEq, null, tint = VoxRed) else Text("${i + 1}", color = MaterialTheme.colorScheme.onSurfaceVariant) },
+                    headlineContent = { Text(c.title, maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (cur) VoxRed else MaterialTheme.colorScheme.onSurface) },
+                    supportingContent = if (c.durationSec > 0) ({ Text(fmtTime((c.durationSec * 1000f / sp).toLong())) }) else null,
+                    modifier = Modifier.clickable { vm.gotoChapter(i); chapters = false })
             }
         }
     }
