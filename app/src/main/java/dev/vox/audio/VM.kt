@@ -40,6 +40,39 @@ class VM(app: Application) : AndroidViewModel(app) {
     var detailError by mutableStateOf<String?>(null)
     var library by mutableStateOf(store.library())
     var history by mutableStateOf(store.history())
+    // ---- discovery: daily-rotating editor picks and themed shelves
+    var shelves by mutableStateOf<List<Shelf>>(emptyList())
+    var featured by mutableStateOf<Featured?>(null)
+    var becauseShelf by mutableStateOf<Shelf?>(null)
+    private val lv = LibriVoxAddon()
+
+    fun loadDiscover(force: Boolean = false) = viewModelScope.launch {
+        val (today, pickOfDay) = Discover.today()
+        val ids = listOf("editors") + today.map { it.id }
+        shelves = listOf(Shelf("editors", "Editor's picks", "Ten classics chosen for today")) + today
+        launch { Discover.resolve(pickOfDay, lv)?.let { featured = Featured(it, pickOfDay.blurb, "Pick of the day") } }
+        ids.forEach { id -> launch {
+            val books = Discover.picksFor(id).map { p -> async { Discover.resolve(p, lv) } }.awaitAll().filterNotNull().distinctBy { it.key }
+            shelves = shelves.map { if (it.id == id) it.copy(books = books, loading = false) else it }
+        } }
+        refreshBecause()
+    }
+
+    /** "Because you listened to X": more by the author of the last audiobook you played. */
+    fun refreshBecause() = viewModelScope.launch {
+        val last = history.firstOrNull { it.author.isNotBlank() && it.addonId != "ebook" } ?: return@launch
+        val author = last.author.substringBefore(",").trim()
+        val books = runCatching { lv.catalog("latest", author.substringAfterLast(' '), 0) }.getOrDefault(emptyList())
+            .filter { it.key != last.key && it.author.contains(author.substringAfterLast(' '), true) }.distinctBy { it.title }.take(12)
+        becauseShelf = if (books.size >= 3) Shelf("because", "Because you listened to ${displayTitleShort(last.title)}", "More from $author", books, false) else null
+    }
+    private fun displayTitleShort(t: String) = t.substringBefore(" / ").substringBefore(";").take(34)
+
+    fun surprise() {
+        val pool = shelves.flatMap { it.books }.distinctBy { it.key }
+        pool.randomOrNull()?.let { open(it) }
+    }
+
     var statsTick by mutableIntStateOf(0)                         // bumps while playing so the stats card refreshes
     var recent by mutableStateOf(store.recentSearches())
     var onboarded by mutableStateOf(store.onboarded || store.history().isNotEmpty())
@@ -90,6 +123,7 @@ class VM(app: Application) : AndroidViewModel(app) {
             val remote = store.addonUrls().map { u -> async { runCatching { HttpAddon.install(u) }.getOrNull() } }.awaitAll().filterNotNull()
             addons = builtin + remote
             refreshRows()
+            loadDiscover()
         }
         viewModelScope.launch {
             var tick = 0; var loop = 0

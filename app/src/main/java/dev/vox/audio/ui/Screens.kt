@@ -39,6 +39,8 @@ fun HomeScreen(vm: VM, onOpen: (Book) -> Unit) {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
         item { Hero(vm, hero, heroH, onOpen) }
         if (vm.update != null) item { UpdateBanner(vm) }
+        item { Greeting(vm) }
+        vm.featured?.let { f -> item { FeaturedCard(vm, f, onOpen) } }
         if (vm.continueList.isNotEmpty()) item {
             Shelf("Continue Listening") {
                 items(vm.continueList, key = { "h" + it.key }) { b ->
@@ -52,6 +54,8 @@ fun HomeScreen(vm: VM, onOpen: (Book) -> Unit) {
         if (vm.library.isNotEmpty()) item {
             Shelf("My List") { items(vm.library, key = { "l" + it.key }) { BookCard(it, Modifier.width(cardW)) { onOpen(it) } } }
         }
+        vm.becauseShelf?.let { sh -> item(key = "because") { DiscoverShelf(sh, onOpen) } }
+        items(vm.shelves, key = { "sh" + it.id }) { DiscoverShelf(it, onOpen) }
         items(vm.rows.filter { it.loading || it.books.isNotEmpty() || it.error != null }, key = { it.key }) { RowSection(vm, it, onOpen) }
     }
 }
@@ -493,6 +497,64 @@ fun Onboarding(vm: VM) {
                 Modifier.fillMaxWidth().widthIn(max = 480.dp), colors = ButtonDefaults.buttonColors(containerColor = VoxRed, contentColor = Color.White)) {
                 Text(if (pager.currentPage == pages.lastIndex) "Start listening" else "Next", fontWeight = FontWeight.Bold)
             }
+        }
+    }
+}
+
+// ------------------------------------------------------------------ DISCOVER
+@Composable
+private fun Greeting(vm: VM) {
+    val h = java.time.LocalTime.now().hour
+    val hello = when { h < 5 -> "Still up?"; h < 12 -> "Good morning"; h < 18 -> "Good afternoon"; else -> "Good evening" }
+    val st = vm.store.listenedOn(0)
+    Row(Modifier.padding(16.dp, 14.dp, 16.dp, 0.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(hello, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Text(if (st > 60_000) "${st / 60_000} min listened today" else "What are we listening to?", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        FilledTonalButton({ vm.surprise() }, enabled = vm.shelves.any { it.books.isNotEmpty() }) {
+            Icon(Icons.Rounded.AutoAwesome, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Surprise me")
+        }
+    }
+}
+
+@Composable
+private fun FeaturedCard(vm: VM, f: dev.vox.audio.data.Featured, onOpen: (Book) -> Unit) {
+    Surface(shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .45f),
+        modifier = Modifier.padding(16.dp, 14.dp, 16.dp, 0.dp).fillMaxWidth().clickable { onOpen(f.book) }) {
+        Row(Modifier.padding(12.dp)) {
+            Cover(f.book.cover, Modifier.size(112.dp), 12.dp)
+            Column(Modifier.padding(start = 14.dp).weight(1f).heightIn(min = 112.dp), verticalArrangement = Arrangement.SpaceBetween) {
+                Column {
+                    Text(f.label.uppercase(), color = VoxRed, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp)
+                    Text(displayTitle(f.book.title), fontWeight = FontWeight.Bold, fontSize = 18.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(f.book.author, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Spacer(Modifier.height(4.dp))
+                    Text(f.blurb, fontSize = 13.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Button({ onOpen(f.book) }, contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp), colors = ButtonDefaults.buttonColors(containerColor = VoxRed, contentColor = Color.White)) {
+                        Icon(Icons.Rounded.PlayArrow, null, Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("Listen")
+                    }
+                    if (f.book.totalSec > 0) Text("  ${fmtDur(f.book.totalSec.toLong())}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DiscoverShelf(sh: dev.vox.audio.data.Shelf, onOpen: (Book) -> Unit) {
+    if (!sh.loading && sh.books.isEmpty()) return
+    val cardW = cardWidth()
+    Column(Modifier.padding(top = 18.dp)) {
+        Text(sh.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 16.dp))
+        if (sh.subtitle.isNotBlank()) Text(sh.subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp))
+        Spacer(Modifier.height(8.dp))
+        if (sh.books.isEmpty()) LazyRow(contentPadding = PaddingValues(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(4) { Box(Modifier.width(cardW).aspectRatio(1f).clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .4f))) }
+        } else LazyRow(contentPadding = PaddingValues(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(sh.books, key = { sh.id + it.key }) { BookCard(it, Modifier.width(cardW)) { onOpen(it) } }
         }
     }
 }
