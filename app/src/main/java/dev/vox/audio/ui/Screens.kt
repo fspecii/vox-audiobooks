@@ -13,6 +13,8 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import kotlinx.coroutines.launch
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
@@ -381,6 +383,29 @@ fun DetailScreen(vm: VM, b: Book, onBack: (() -> Unit)?) {
     val progress = vm.progressOf(b)
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
         item {
+            val modal = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 600 && onBack != null
+            if (modal) {
+                // wide screens: a sharp cover next to the title, over a soft blurred backdrop (never a zoomed crop of the artwork)
+                Box(Modifier.fillMaxWidth()) {
+                    if (b.cover != null) AsyncImage(b.cover, null, Modifier.matchParentSize().blur(40.dp), contentScale = ContentScale.Crop, alpha = .45f)
+                    Box(Modifier.matchParentSize().background(Brush.verticalGradient(listOf(Color(0x66000000), MaterialTheme.colorScheme.surface))))
+                    Row(Modifier.fillMaxWidth().padding(28.dp, 28.dp, 28.dp, 20.dp), verticalAlignment = Alignment.Bottom) {
+                        Cover(b.cover, Modifier.size(210.dp).shadow(16.dp, RoundedCornerShape(12.dp)), 12.dp)
+                        Column(Modifier.padding(start = 24.dp).weight(1f)) {
+                            Text(b.title, fontSize = 30.sp, lineHeight = 34.sp, fontWeight = FontWeight.Bold, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                            Spacer(Modifier.height(6.dp))
+                            if (b.author.isNotBlank()) Text(b.author, fontSize = 17.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Spacer(Modifier.height(6.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                if (b.totalSec > 0) Text(fmtDur((b.totalSec / vm.speed.coerceAtLeast(0.5f)).toLong()) + if (vm.speed != 1f) " at ${vm.speed}x" else "", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                if (b.chapters.isNotEmpty()) Text("${b.chapters.size} chapters", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                sourceBadge(b.addonId)?.let { Text(it, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.clip(RoundedCornerShape(4.dp)).background(VoxRed).padding(horizontal = 5.dp, vertical = 2.dp)) }
+                            }
+                        }
+                    }
+                    IconButton(onBack!!, Modifier.align(Alignment.TopEnd).padding(8.dp)) { Icon(Icons.Rounded.Close, "Close") }
+                }
+            } else
             Box(Modifier.fillMaxWidth().height(300.dp)) {
                 if (b.cover != null) AsyncImage(b.cover, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop, alpha = .7f)
                 Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0x99000000), Color.Transparent, MaterialTheme.colorScheme.background))))
@@ -397,7 +422,7 @@ fun DetailScreen(vm: VM, b: Book, onBack: (() -> Unit)?) {
                     }
                 }
             }
-            FlowRow(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            FlowRow(Modifier.padding(horizontal = if (modal) 28.dp else 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Button({ vm.resume(b) }, enabled = b.chapters.isNotEmpty(),
                     colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black)) {
                     Icon(if (playingThis && vm.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, null)
@@ -433,8 +458,8 @@ fun DetailScreen(vm: VM, b: Book, onBack: (() -> Unit)?) {
                 Text("⬇ $it", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(16.dp, 8.dp, 16.dp, 0.dp))
             }
-            if (b.description.isNotBlank()) Text(b.description, style = MaterialTheme.typography.bodyMedium, maxLines = 6,
-                overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(16.dp))
+            if (b.description.isNotBlank()) Text(b.description, style = MaterialTheme.typography.bodyMedium, maxLines = if (modal) 8 else 6,
+                overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(if (modal) 28.dp else 16.dp, 16.dp))
             if (b.pending > 0) Text(if (dev.vox.audio.reader.Converter.bookId == b.id) "Generating audio: ${dev.vox.audio.reader.Converter.ready} of ${dev.vox.audio.reader.Converter.total} chapters ready. You can listen now, the rest is added as it finishes."
                 else "${b.pending} parts are still to be made.",
                 style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(16.dp, 8.dp, 16.dp, 0.dp))
