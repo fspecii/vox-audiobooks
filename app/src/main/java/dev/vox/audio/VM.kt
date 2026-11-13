@@ -279,15 +279,18 @@ class VM(app: Application) : AndroidViewModel(app) {
     }
 
     /** Continue from the saved chapter + position (5 s of rewind). Loads the chapter list first if the card came from history. */
+    private fun isStale(b: Book) = b.chapters.firstOrNull()?.url?.let { !Torrents.knows(it) } == true
+
     fun resume(book: Book) {
-        if (nowBook?.key == book.key) { togglePlay(); return }
+        val cur = nowBook?.takeIf { it.key == book.key }
+        if (cur != null && !isStale(cur)) { togglePlay(); return }
         val p = store.progress(book.key)
         val fresh = p == null || book.key in finished
         val ch = if (fresh) 0 else p!!.chapter
         val pos = if (fresh) 0L else (p!!.positionMs - 5000).coerceAtLeast(0)
-        if (book.chapters.isNotEmpty()) { play(book, ch, pos); return }
-        store.lastBook()?.takeIf { it.key == book.key && it.chapters.isNotEmpty() }?.let { play(it, ch, pos); return }
-        viewModelScope.launch {
+        if (book.chapters.isNotEmpty() && !isStale(book)) { play(book, ch, pos); return }
+        store.lastBook()?.takeIf { it.key == book.key && it.chapters.isNotEmpty() && !isStale(it) }?.let { play(it, ch, pos); return }
+        viewModelScope.launch {    // torrent URLs from an earlier launch: re-resolve through the addon
             val a = addonFor(book) ?: return@launch
             runCatching { a.meta(book) }.onSuccess { m -> play(m.copy(cover = m.cover ?: book.cover, author = m.author.ifBlank { book.author }), ch, pos) }
         }
@@ -297,6 +300,7 @@ class VM(app: Application) : AndroidViewModel(app) {
     fun togglePlay() {
         val c = controller ?: return
         if (c.isPlaying) { c.pause(); return }
+        nowBook?.takeIf { isStale(it) }?.let { resume(it); return }
         // smart rewind: the longer you were away, the more it backs up
         val away = if (pausedAt > 0) System.currentTimeMillis() - pausedAt else 0L
         val back = when { away > 30 * 60_000L -> 15_000L; away > 5 * 60_000L -> 8_000L; away > 60_000L -> 4_000L; else -> 0L }
