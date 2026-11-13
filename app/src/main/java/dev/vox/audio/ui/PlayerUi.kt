@@ -119,13 +119,20 @@ fun FullPlayer(vm: VM, onClose: () -> Unit) {
         }
     }
 
-    val dragY = remember { androidx.compose.animation.core.Animatable(0f) }
+    // ONE offset drives entering, dragging and leaving, so there is never a second (duplicate) animation
+    val hPx = with(androidx.compose.ui.platform.LocalDensity.current) { androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp.toPx() }
+    val dragY = remember { androidx.compose.animation.core.Animatable(hPx) }
     val scopeP = rememberCoroutineScope()
-    val dismissState = androidx.compose.foundation.gestures.rememberDraggableState { d -> scopeP.launch { dragY.snapTo((dragY.value + d).coerceAtLeast(0f)) } }
+    var closing by remember { mutableStateOf(false) }
+    fun requestClose() { if (closing) return; closing = true
+        scopeP.launch { dragY.animateTo(hPx, androidx.compose.animation.core.tween(240, easing = androidx.compose.animation.core.FastOutLinearInEasing)); onClose() } }
+    LaunchedEffect(Unit) { dragY.animateTo(0f, androidx.compose.animation.core.spring(dampingRatio = .85f, stiffness = 380f)) }
+    androidx.activity.compose.BackHandler(true) { requestClose() }
+    val dismissState = androidx.compose.foundation.gestures.rememberDraggableState { d -> if (!closing) scopeP.launch { dragY.snapTo((dragY.value + d).coerceAtLeast(0f)) } }
     Surface(Modifier.fillMaxSize()
-        .graphicsLayer { translationY = dragY.value; val f = (dragY.value / 1400f).coerceIn(0f, 1f); alpha = 1f - f * .6f; scaleX = 1f - f * .06f; scaleY = 1f - f * .06f }
+        .graphicsLayer { translationY = dragY.value; val f = (dragY.value / hPx).coerceIn(0f, 1f); alpha = 1f - f * .5f; scaleX = 1f - f * .05f; scaleY = 1f - f * .05f }
         .draggable(dismissState, androidx.compose.foundation.gestures.Orientation.Vertical, onDragStopped = { v ->
-            if (dragY.value > 380f || v > 1800f) { dragY.animateTo(2400f, androidx.compose.animation.core.tween(180)); onClose(); dragY.snapTo(0f) }
+            if (dragY.value > 320f || v > 1600f) requestClose()
             else dragY.animateTo(0f, androidx.compose.animation.core.spring(dampingRatio = .75f, stiffness = 400f))
         })) {
         // the cover, blurred and darkened, tints the whole screen
@@ -137,7 +144,7 @@ fun FullPlayer(vm: VM, onClose: () -> Unit) {
             val sideBySide = maxWidth >= 600.dp && maxWidth > maxHeight * 0.85f
             Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClose) { Icon(Icons.Rounded.KeyboardArrowDown, "Close") }
+                    IconButton({ requestClose() }) { Icon(Icons.Rounded.KeyboardArrowDown, "Close") }
                     Spacer(Modifier.weight(1f))
                     if (b.addonId == "local" && vm.hasBook(b.id)) ModeSwitch(audio = true, onAudio = {}, onBook = { vm.openBook(b) })
                     if (vm.bookmarks.isNotEmpty()) TextButton({ marks = true }) { Icon(Icons.Rounded.Bookmarks, null); Spacer(Modifier.width(6.dp)); Text("${vm.bookmarks.size}") }

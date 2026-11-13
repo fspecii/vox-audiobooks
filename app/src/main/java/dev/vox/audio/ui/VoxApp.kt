@@ -2,6 +2,9 @@ package dev.vox.audio.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.*
@@ -10,6 +13,7 @@ import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
@@ -24,11 +28,27 @@ fun VoxApp(vm: VM) {
     val w = LocalConfiguration.current.screenWidthDp
     val rail = w >= 600
     val twoPane = w >= 640          // Fold unfolded: list + detail side by side
-    var tab by rememberSaveable { mutableIntStateOf(0) }
-    val player = vm.playerOpen
     val reading = vm.reading
+    var tab by rememberSaveable { mutableIntStateOf(0) }
+    // bottom bar: hides while you scroll down, comes back after a short scroll up (or at the top)
+    var barVisible by remember { mutableStateOf(true) }
+    var acc by remember { mutableFloatStateOf(0f) }
+    val hideOnScroll = remember {
+        object : androidx.compose.ui.input.nestedscroll.NestedScrollConnection {
+            override fun onPreScroll(available: androidx.compose.ui.geometry.Offset, source: androidx.compose.ui.input.nestedscroll.NestedScrollSource): androidx.compose.ui.geometry.Offset {
+                val dy = available.y
+                if (dy == 0f) return androidx.compose.ui.geometry.Offset.Zero
+                if ((dy < 0) != (acc < 0)) acc = 0f                       // direction changed: restart the count
+                acc += dy
+                if (acc < -60f) barVisible = false                         // scrolling down (content moving up)
+                else if (acc > 40f) barVisible = true                      // a little scroll up
+                return androidx.compose.ui.geometry.Offset.Zero
+            }
+        }
+    }
+    LaunchedEffect(tab, vm.detail, reading) { barVisible = true; acc = 0f }
+    val player = vm.playerOpen
 
-    BackHandler(player) { vm.playerOpen = false }
     BackHandler(!player && vm.detail != null && !twoPane) { vm.closeDetail() }
 
     Surface(Modifier.fillMaxSize()) {
@@ -42,16 +62,25 @@ fun VoxApp(vm: VM) {
                     Spacer(Modifier.weight(1f))
                 }
                 Column(Modifier.weight(1f)) {
-                    Box(Modifier.weight(1f), Alignment.TopCenter) { Box(Modifier.widthIn(max = 1500.dp)) { Content(vm, tab, twoPane) { vm.openEbook(it) } } }
+                    Box(Modifier.weight(1f).nestedScroll(hideOnScroll), Alignment.TopCenter) { Box(Modifier.widthIn(max = 1500.dp)) { androidx.compose.animation.Crossfade(tab, animationSpec = androidx.compose.animation.core.tween(180), label = "tab") { t -> Content(vm, t, twoPane) { vm.openEbook(it) } } } }
                     MiniPlayer(vm) { vm.playerOpen = true }
-                    if (!rail) NavigationBar {
-                        tabs.forEachIndexed { i, t ->
-                            NavigationBarItem(tab == i, { tab = i }, { Icon(t.icon, t.label) }, label = { Text(t.label) })
+                    if (!rail) androidx.compose.animation.AnimatedVisibility(barVisible,
+                        enter = androidx.compose.animation.expandVertically(androidx.compose.animation.core.tween(220)) + fadeIn(androidx.compose.animation.core.tween(200)),
+                        exit = androidx.compose.animation.shrinkVertically(androidx.compose.animation.core.tween(220)) + fadeOut(androidx.compose.animation.core.tween(160))) {
+                        NavigationBar {
+                            tabs.forEachIndexed { i, t ->
+                                NavigationBarItem(tab == i, { tab = i }, { Icon(t.icon, t.label) }, label = { Text(t.label) })
+                            }
                         }
                     }
                 }
             }
-            reading?.let { id -> ReaderScreen(vm, id) { vm.reading = null } }
+            var lastRead by remember { mutableStateOf<String?>(null) }
+            if (reading != null) lastRead = reading
+            AnimatedVisibility(reading != null, enter = fadeIn(androidx.compose.animation.core.tween(220)) + androidx.compose.animation.scaleIn(initialScale = .94f, animationSpec = androidx.compose.animation.core.tween(260)),
+                exit = fadeOut(androidx.compose.animation.core.tween(160)) + androidx.compose.animation.scaleOut(targetScale = .96f)) {
+                lastRead?.let { id -> ReaderScreen(vm, id) { vm.reading = null } }
+            }
             vm.askBook?.let { id ->
                 val meta = dev.vox.audio.reader.Ebooks.list.firstOrNull { it.id == id }
                 AlertDialog({ vm.askBook = null },
@@ -69,7 +98,7 @@ fun VoxApp(vm: VM) {
                     }
                 }
             }
-            AnimatedVisibility(player, enter = slideInVertically { it }, exit = slideOutVertically { it }) {
+            if (player) run {
                 FullPlayer(vm) { vm.playerOpen = false }
             }
         }
@@ -95,5 +124,10 @@ private fun Content(vm: VM, tab: Int, twoPane: Boolean, onRead: (String) -> Unit
                 Text("Pick an audiobook", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
-    } else if (detail != null) DetailScreen(vm, detail) { vm.closeDetail() } else list()
+    } else androidx.compose.animation.AnimatedContent(detail, transitionSpec = {
+        if (targetState != null) (androidx.compose.animation.slideInHorizontally(androidx.compose.animation.core.tween(260)) { it / 4 } + fadeIn(androidx.compose.animation.core.tween(220))) togetherWith
+            (androidx.compose.animation.slideOutHorizontally(androidx.compose.animation.core.tween(260)) { -it / 6 } + fadeOut(androidx.compose.animation.core.tween(160)))
+        else (androidx.compose.animation.slideInHorizontally(androidx.compose.animation.core.tween(260)) { -it / 6 } + fadeIn(androidx.compose.animation.core.tween(220))) togetherWith
+            (androidx.compose.animation.slideOutHorizontally(androidx.compose.animation.core.tween(260)) { it / 4 } + fadeOut(androidx.compose.animation.core.tween(160)))
+    }, label = "detail") { d -> if (d != null) DetailScreen(vm, d) { vm.closeDetail() } else list() }
 }

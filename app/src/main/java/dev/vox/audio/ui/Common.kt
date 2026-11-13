@@ -57,7 +57,8 @@ fun BookCard(b: Book, modifier: Modifier = Modifier, progress: Float? = null, sh
         if (showText) {
             Spacer(Modifier.height(6.dp))
             // fixed text block (2 title lines + 1 author line) so every tile in every row has the same height
-            Text(displayTitle(b.title), style = MaterialTheme.typography.labelLarge, minLines = 2, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(displayTitle(b.title), style = MaterialTheme.typography.labelLarge, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.heightIn(min = 40.dp), lineHeight = 20.sp)
             Text(b.author.ifBlank { " " }, style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
