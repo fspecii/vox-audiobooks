@@ -32,13 +32,16 @@ import dev.vox.audio.data.Torrents
 @Composable
 fun HomeScreen(vm: VM, onOpen: (Book) -> Unit) {
     val hero = vm.continueList.firstOrNull() ?: vm.rows.firstNotNullOfOrNull { it.books.firstOrNull() }
+    val cfg = androidx.compose.ui.platform.LocalConfiguration.current
+    val cardW = cardWidth()
+    val heroH = (cfg.screenHeightDp * 0.42f).coerceIn(240f, 460f).dp
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
-        item { Hero(vm, hero, onOpen) }
+        item { Hero(vm, hero, heroH, onOpen) }
         if (vm.update != null) item { UpdateBanner(vm) }
         if (vm.continueList.isNotEmpty()) item {
             Shelf("Continue Listening") {
                 items(vm.continueList, key = { "h" + it.key }) { b ->
-                    Column(Modifier.width(150.dp)) {
+                    Column(Modifier.width(cardW)) {
                         BookCard(b, Modifier.fillMaxWidth(), progress = vm.fractionOf(b)) { vm.resume(b) }
                         vm.resumeLabel(b)?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = VoxRed, modifier = Modifier.padding(top = 2.dp)) }
                     }
@@ -46,16 +49,17 @@ fun HomeScreen(vm: VM, onOpen: (Book) -> Unit) {
             }
         }
         if (vm.library.isNotEmpty()) item {
-            Shelf("My List") { items(vm.library, key = { "l" + it.key }) { BookCard(it, Modifier.width(150.dp)) { onOpen(it) } } }
+            Shelf("My List") { items(vm.library, key = { "l" + it.key }) { BookCard(it, Modifier.width(cardW)) { onOpen(it) } } }
         }
-        items(vm.rows, key = { it.key }) { RowSection(vm, it, onOpen) }
+        items(vm.rows.filter { it.loading || it.books.isNotEmpty() || it.error != null }, key = { it.key }) { RowSection(vm, it, onOpen) }
     }
 }
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-private fun Hero(vm: VM, b: Book?, onOpen: (Book) -> Unit) {
+private fun Hero(vm: VM, b: Book?, height: androidx.compose.ui.unit.Dp, onOpen: (Book) -> Unit) {
     val bg = MaterialTheme.colorScheme.background
-    Box(Modifier.fillMaxWidth().height(440.dp)) {
+    Box(Modifier.fillMaxWidth().height(height)) {
         if (b?.cover != null) AsyncImage(b.cover, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop, alpha = .75f)
         Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0xAA000000), Color.Transparent, bg))))
         Row(Modifier.statusBarsPadding().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -65,7 +69,7 @@ private fun Hero(vm: VM, b: Book?, onOpen: (Book) -> Unit) {
             Text(b.title, fontSize = 28.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
             if (b.author.isNotBlank()) Text(b.author, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 val label = vm.resumeLabel(b)
                 Button({ if (label != null) vm.resume(b) else onOpen(b) }, colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black)) {
                     Icon(Icons.Rounded.PlayArrow, null); Spacer(Modifier.width(4.dp))
@@ -80,6 +84,9 @@ private fun Hero(vm: VM, b: Book?, onOpen: (Book) -> Unit) {
         }
     }
 }
+
+@Composable
+private fun cardWidth() = if (androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 840) 180.dp else 150.dp
 
 @Composable
 private fun UpdateBanner(vm: VM) {
@@ -109,6 +116,7 @@ private fun Shelf(title: String, content: LazyListScope.() -> Unit) {
 
 @Composable
 private fun RowSection(vm: VM, r: CatRow, onOpen: (Book) -> Unit) {
+    val cardW = cardWidth()
     Column(Modifier.padding(top = 16.dp)) {
         Text(r.cat.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 16.dp))
         Spacer(Modifier.height(8.dp))
@@ -119,7 +127,7 @@ private fun RowSection(vm: VM, r: CatRow, onOpen: (Book) -> Unit) {
                 TextButton({ vm.retry(r) }) { Text("Retry") }
             }
             else -> LazyRow(contentPadding = PaddingValues(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(r.books, key = { it.key }) { BookCard(it, Modifier.width(150.dp)) { onOpen(it) } }
+                items(r.books, key = { it.key }) { BookCard(it, Modifier.width(cardW)) { onOpen(it) } }
                 if (!r.end) item {
                     Box(Modifier.width(100.dp).height(150.dp), Alignment.Center) {
                         if (r.loading) CircularProgressIndicator(color = VoxRed) else TextButton({ vm.loadMore(r) }) { Text("More") }
@@ -198,8 +206,9 @@ fun AddonsScreen(vm: VM) {
     var cache by remember { mutableLongStateOf(Torrents.cacheBytes()) }
     LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(16.dp)) {
         item {
-            Text("Addons", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Text("Settings", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(4.dp))
+            Text("Addons", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Text("Addons add catalogs of audiobooks. Paste a manifest URL (https:// or stremio://) from a source you trust.",
                 style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(12.dp))
@@ -243,6 +252,33 @@ fun AddonsScreen(vm: VM) {
                 supportingContent = { Text("Check on launch, download and install when nothing is playing") },
                 trailingContent = { Switch(vm.autoUpdate, { vm.toggleAutoUpdate() }) },
             )
+            var voiceMenu by remember { mutableStateOf(false) }
+            val auto = vm.voiceId.isBlank()
+            ListItem(
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                headlineContent = { Text("Reading voice") },
+                supportingContent = {
+                    val inst = dev.vox.audio.reader.Voices.installing
+                    Text(when {
+                        inst != null -> "Downloading voice… ${(dev.vox.audio.reader.Voices.progress * 100).toInt()}%"
+                        auto -> "Automatic: matches the language of each book"
+                        else -> dev.vox.audio.reader.Voices.all.firstOrNull { it.id == vm.voiceId }?.label ?: vm.voiceId
+                    })
+                },
+                trailingContent = {
+                    Box {
+                        TextButton({ voiceMenu = true }) { Text("Change") }
+                        DropdownMenu(voiceMenu, { voiceMenu = false }) {
+                            DropdownMenuItem({ Text("Automatic") }, { vm.setVoice(""); voiceMenu = false }, leadingIcon = { if (auto) Icon(Icons.Rounded.Check, null) })
+                            dev.vox.audio.reader.Voices.all.forEach { v ->
+                                DropdownMenuItem({ Text(v.label + if (dev.vox.audio.reader.Voices.installed(v.id)) "" else "  ·  65 MB download") },
+                                    { vm.setVoice(v.id); voiceMenu = false }, leadingIcon = { if (v.id == vm.voiceId) Icon(Icons.Rounded.Check, null) })
+                            }
+                        }
+                    }
+                },
+            )
+            dev.vox.audio.reader.Voices.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
             ListItem(
                 colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                 headlineContent = { Text("Skip silence") },
@@ -261,6 +297,7 @@ fun AddonsScreen(vm: VM) {
 }
 
 // ------------------------------------------------------------------ DETAIL
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun DetailScreen(vm: VM, b: Book, onBack: (() -> Unit)?) {
     val playingThis = vm.nowBook?.key == b.key
@@ -277,13 +314,13 @@ fun DetailScreen(vm: VM, b: Book, onBack: (() -> Unit)?) {
                     Text(b.title, fontSize = 26.sp, fontWeight = FontWeight.Bold, maxLines = 3, overflow = TextOverflow.Ellipsis)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         if (b.author.isNotBlank()) Text(b.author, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        if (b.totalSec > 0) Text("${b.totalSec / 3600}h ${b.totalSec % 3600 / 60}m", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (b.totalSec > 0) Text(fmtDur((b.totalSec / vm.speed.coerceAtLeast(0.5f)).toLong()) + if (vm.speed != 1f) " at ${vm.speed}x" else "", color = MaterialTheme.colorScheme.onSurfaceVariant)
                         sourceBadge(b.addonId)?.let { Text(it, fontSize = 10.sp, fontWeight = FontWeight.Bold,
                             modifier = Modifier.clip(RoundedCornerShape(4.dp)).background(VoxRed).padding(horizontal = 5.dp, vertical = 2.dp)) }
                     }
                 }
             }
-            Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            FlowRow(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Button({ vm.resume(b) }, enabled = b.chapters.isNotEmpty(),
                     colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black)) {
                     Icon(if (playingThis && vm.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, null)
@@ -305,6 +342,9 @@ fun DetailScreen(vm: VM, b: Book, onBack: (() -> Unit)?) {
             }
             if (b.description.isNotBlank()) Text(b.description, style = MaterialTheme.typography.bodyMedium, maxLines = 6,
                 overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(16.dp))
+            if (b.pending > 0) Text(if (dev.vox.audio.reader.Converter.bookId == b.id) "Generating audio: ${dev.vox.audio.reader.Converter.ready} of ${dev.vox.audio.reader.Converter.total} chapters ready. You can listen now, the rest is added as it finishes."
+                else "${b.pending} chapters not generated yet. Open the book in Books and tap convert to continue.",
+                style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(16.dp, 8.dp, 16.dp, 0.dp))
             if (vm.detailLoading) {
                 LinearProgressIndicator(Modifier.fillMaxWidth().padding(16.dp), color = VoxRed)
                 if (b.addonId == "torrent" || b.addonId == "youtube") Text(

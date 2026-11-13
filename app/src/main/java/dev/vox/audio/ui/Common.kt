@@ -31,6 +31,7 @@ fun Cover(url: String?, modifier: Modifier = Modifier, radius: Dp = 8.dp) {
 fun sourceBadge(addonId: String): String? = when {
     addonId == "torrent" -> "TORRENT"
     addonId == "youtube" -> "YOUTUBE"
+    addonId == "local" -> "AI VOICE"
     else -> null
 }
 
@@ -64,4 +65,9 @@ fun fmtTime(ms: Long): String {
     val s = (ms / 1000).coerceAtLeast(0)
     val h = s / 3600; val m = s % 3600 / 60; val sec = s % 60
     return if (h > 0) "%d:%02d:%02d".format(h, m, sec) else "%d:%02d".format(m, sec)
+}
+
+/** "2h 05m" / "45m" for a number of seconds. */
+fun fmtDur(sec: Long): String {
+    val m = (sec / 60).coerceAtLeast(0); return if (m >= 60) "${m / 60}h ${"%02d".format(m % 60)}m" else "${m}m"
 }

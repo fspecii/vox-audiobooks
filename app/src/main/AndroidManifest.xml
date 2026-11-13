@@ -33,6 +33,7 @@
                 <data android:scheme="vox" />
             </intent-filter>
         </activity>
+        <service android:name=".reader.NarrationService" android:exported="false" android:foregroundServiceType="mediaPlayback" />
         <receiver android:name=".data.UpdateReceiver" android:exported="false" />
         <service
             android:name=".play.PlaybackService"

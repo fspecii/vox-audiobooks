@@ -68,6 +68,22 @@ class Store(ctx: Context) {
         get() = p.getLong("updChecked", 0L)
         set(v) = p.edit().putLong("updChecked", v).apply()
 
+    // ---- reader
+    fun readPos(id: String): Pair<Int, Int>? = p.getString("rd:$id", null)?.split(':')?.let { (it.getOrNull(0)?.toIntOrNull() ?: 0) to (it.getOrNull(1)?.toIntOrNull() ?: 0) }
+    fun setReadPos(id: String, chapter: Int, offset: Int) = p.edit().putString("rd:$id", "$chapter:$offset").apply()
+    var readerSize: Float
+        get() = p.getFloat("rdSize", 19f)
+        set(v) = p.edit().putFloat("rdSize", v).apply()
+    var readerTheme: Int
+        get() = p.getInt("rdTheme", 0)
+        set(v) = p.edit().putInt("rdTheme", v).apply()
+    var readerSerif: Boolean
+        get() = p.getBoolean("rdSerif", true)
+        set(v) = p.edit().putBoolean("rdSerif", v).apply()
+    var voice: String
+        get() = p.getString("voice", "") ?: ""
+        set(v) = p.edit().putString("voice", v).apply()
+
     var speed: Float
         get() = p.getFloat("speed", 1f)
         set(v) = p.edit().putFloat("speed", v).apply()

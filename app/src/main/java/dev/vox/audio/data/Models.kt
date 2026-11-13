@@ -12,6 +12,7 @@ data class Book(
     val narrator: String? = null,
     val totalSec: Int = 0,
     val chapters: List<Chapter> = emptyList(),
+    val pending: Int = 0,        // chapters still being generated (on-device audiobooks)
 ) {
     val key get() = "$addonId|$id"
 }

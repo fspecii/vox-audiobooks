@@ -7,3 +7,4 @@ local.properties
 .idea/
 build.sh
 shots/
+app/libs/

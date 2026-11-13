@@ -26,7 +26,7 @@ class PlaybackService : MediaSessionService() {
         val http = OkHttpDataSource.Factory(Http.client)
             .setUserAgent("Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36")
         // yt://VIDEOID -> real (expiring) YouTube audio URL, resolved lazily via yt-dlp when playback starts
-        val resolving = ResolvingDataSource.Factory(http) { spec ->
+        val resolving = ResolvingDataSource.Factory(androidx.media3.datasource.DefaultDataSource.Factory(this, http)) { spec ->
             if (spec.uri.scheme == "yt") spec.withUri(Uri.parse(YT.streamUrl(spec.uri.schemeSpecificPart.trim('/')))) else spec
         }
         val player = ExoPlayer.Builder(this)

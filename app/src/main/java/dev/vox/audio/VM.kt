@@ -24,7 +24,7 @@ data class Row(val addon: Addon, val cat: CatalogDef, val books: List<Book> = em
 
 class VM(app: Application) : AndroidViewModel(app) {
     val store = Store(app)
-    private val builtin: List<Addon> = listOf(LibriVoxAddon(), ArchiveAddon(), TorrentAddon(), YouTubeAddon())
+    private val builtin: List<Addon> = listOf(LibriVoxAddon(), ArchiveAddon(), TorrentAddon(), YouTubeAddon(), LocalAddon(app))
 
     var addons by mutableStateOf(builtin)
     var installBusy by mutableStateOf(false)
@@ -72,6 +72,8 @@ class VM(app: Application) : AndroidViewModel(app) {
 
     init {
         Torrents.init(app)
+        dev.vox.audio.reader.Ebooks.init(app)
+        dev.vox.audio.reader.Voices.init(app)
         YT.attach(app)
         viewModelScope.launch { YT.updateIfStale() }
         connect()
@@ -94,12 +96,23 @@ class VM(app: Application) : AndroidViewModel(app) {
                 if (sleepEndsAt > 0 && System.currentTimeMillis() >= sleepEndsAt) { c.pause(); sleepEndsAt = 0 }
                 if (sleepAtChapterEnd && sleepStartChapter >= 0 && chapter != sleepStartChapter) { c.pause(); sleepAtChapterEnd = false }
                 if (updateReady != null && !c.isPlaying && store.autoUpdate) installUpdate()
+                if (tick % 6 == 0) extendLocal(c)
             }
         }
     }
 
     // ---------- addons / catalogs ----------
     fun addonFor(b: Book) = addons.firstOrNull { it.id == b.addonId }
+
+    fun refreshLocal() {
+        val r = rows.firstOrNull { it.addon.id == "local" } ?: return
+        rows = rows.map { if (it.key == r.key) it.copy(loading = true) else it }
+        loadRow(r, 0)
+    }
+    var voiceId by mutableStateOf(store.voice)            // "" = automatic (match the book's language)
+    fun setVoice(id: String) { voiceId = id; store.voice = id
+        if (id.isNotBlank() && !dev.vox.audio.reader.Voices.installed(id)) viewModelScope.launch { dev.vox.audio.reader.Voices.install(id) } }
+    fun pauseBook() { controller?.let { if (it.isPlaying) it.pause() } }
 
     private fun refreshRows() {
         rows = addons.flatMap { a -> a.catalogs.map { Row(a, it) } }
@@ -110,7 +123,7 @@ class VM(app: Application) : AndroidViewModel(app) {
         val res = runCatching { r.addon.catalog(r.cat.id, null, skip) }
         rows = rows.map {
             if (it.key != r.key) it else res.fold(
-                { b -> it.copy(books = if (skip == 0) b else it.books + b, loading = false, error = null, end = b.isEmpty()) },
+                { b -> it.copy(books = if (skip == 0) b else it.books + b, loading = false, error = null, end = b.isEmpty() || r.addon.id == "local") },
                 { e -> it.copy(loading = false, error = e.message ?: "Failed") })
         }
     }
@@ -220,7 +233,7 @@ class VM(app: Application) : AndroidViewModel(app) {
                 }
                 override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) { chapter = c.currentMediaItemIndex; saveProgress() }
                 override fun onPlaybackStateChanged(state: Int) {
-                    if (state == Player.STATE_ENDED) nowBook?.let {
+                    if (state == Player.STATE_ENDED) nowBook?.takeIf { dev.vox.audio.reader.Converter.bookId != it.id }?.let {
                         finished = finished + it.key; store.setFinished(finished)
                         store.saveProgress(Progress(it.key, 0, 0, System.currentTimeMillis(), 1f))
                     }
@@ -279,6 +292,39 @@ class VM(app: Application) : AndroidViewModel(app) {
     }
 
     /** Continue from the saved chapter + position (5 s of rewind). Loads the chapter list first if the card came from history. */
+    /** An on-device audiobook that is still being generated gains chapters: append them to the running playlist. */
+    private var extending = false
+    private fun extendLocal(c: MediaController) {
+        val b = nowBook ?: return
+        if (extending || b.addonId != "local" || dev.vox.audio.reader.Converter.readyId != b.id || dev.vox.audio.reader.Converter.ready <= c.mediaItemCount) return
+        extending = true
+        viewModelScope.launch {
+            runCatching { addons.first { it.id == "local" }.meta(b) }.onSuccess { m ->
+                if (m.chapters.size > c.mediaItemCount) {
+                    c.addMediaItems(mediaItems(m).drop(c.mediaItemCount))
+                    nowBook = m.copy(cover = b.cover ?: m.cover); store.setLastBook(nowBook)
+                    if (detail?.key == b.key) detail = nowBook
+                }
+            }
+            extending = false
+        }
+    }
+
+    /** Seconds of audio left in the whole book (null when some chapter lengths are unknown). */
+    fun bookLeftSec(): Long? {
+        val b = nowBook ?: return null
+        if (b.chapters.isEmpty() || b.chapters.any { it.durationSec <= 0 }) return null
+        val cur = (b.chapters[chapter.coerceIn(0, b.chapters.lastIndex)].durationSec - position / 1000).coerceAtLeast(0)
+        return cur + b.chapters.drop(chapter + 1).sumOf { it.durationSec }
+    }
+
+    /** Start (or continue) an on-device audiobook, even while it is still being generated. */
+    fun playLocal(id: String) = viewModelScope.launch {
+        val m = runCatching { addons.first { it.id == "local" }.meta(Book(id, "local", "")) }.getOrNull() ?: return@launch
+        if (m.chapters.isEmpty()) return@launch
+        detail = m; resume(m)
+    }
+
     private fun isStale(b: Book) = b.chapters.firstOrNull()?.url?.let { !Torrents.knows(it) } == true
 
     fun resume(book: Book) {

@@ -17,15 +17,16 @@ import androidx.compose.ui.unit.dp
 import dev.vox.audio.VM
 
 private data class Tab(val label: String, val icon: androidx.compose.ui.graphics.vector.ImageVector)
-private val tabs = listOf(Tab("Home", Icons.Rounded.Home), Tab("Search", Icons.Rounded.Search), Tab("My Vox", Icons.Rounded.Bookmarks), Tab("Addons", Icons.Rounded.Extension))
+private val tabs = listOf(Tab("Home", Icons.Rounded.Home), Tab("Search", Icons.Rounded.Search), Tab("Books", Icons.Rounded.MenuBook), Tab("My Vox", Icons.Rounded.Bookmarks), Tab("Settings", Icons.Rounded.Settings))
 
 @Composable
 fun VoxApp(vm: VM) {
     val w = LocalConfiguration.current.screenWidthDp
     val rail = w >= 600
-    val twoPane = w >= 700          // Fold unfolded: list + detail side by side
+    val twoPane = w >= 640          // Fold unfolded: list + detail side by side
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var player by rememberSaveable { mutableStateOf(false) }
+    var reading by rememberSaveable { mutableStateOf<String?>(null) }
 
     BackHandler(player) { player = false }
     BackHandler(!player && vm.detail != null && !twoPane) { vm.closeDetail() }
@@ -41,7 +42,7 @@ fun VoxApp(vm: VM) {
                     Spacer(Modifier.weight(1f))
                 }
                 Column(Modifier.weight(1f)) {
-                    Box(Modifier.weight(1f)) { Content(vm, tab, twoPane) }
+                    Box(Modifier.weight(1f), Alignment.TopCenter) { Box(Modifier.widthIn(max = 1500.dp)) { Content(vm, tab, twoPane) { reading = it } } }
                     MiniPlayer(vm) { player = true }
                     if (!rail) NavigationBar {
                         tabs.forEachIndexed { i, t ->
@@ -50,6 +51,7 @@ fun VoxApp(vm: VM) {
                     }
                 }
             }
+            reading?.let { id -> ReaderScreen(vm, id) { reading = null } }
             AnimatedVisibility(player, enter = slideInVertically { it }, exit = slideOutVertically { it }) {
                 FullPlayer(vm) { player = false }
             }
@@ -58,9 +60,10 @@ fun VoxApp(vm: VM) {
 }
 
 @Composable
-private fun Content(vm: VM, tab: Int, twoPane: Boolean) {
+private fun Content(vm: VM, tab: Int, twoPane: Boolean, onRead: (String) -> Unit) {
     val detail = vm.detail
-    if (tab == 3) { AddonsScreen(vm); return }
+    if (tab == 4) { AddonsScreen(vm); return }
+    if (tab == 2) { BooksScreen(vm, onRead); return }
     val list: @Composable () -> Unit = {
         when (tab) { 0 -> HomeScreen(vm) { vm.open(it) }; 1 -> SearchScreen(vm) { vm.open(it) }; else -> MyListScreen(vm) { vm.open(it) } }
     }

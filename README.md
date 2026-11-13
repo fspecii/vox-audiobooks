@@ -40,6 +40,14 @@
   <img src="docs/search.jpg" alt="Vox search across all audiobook sources" width="46%">
 </p>
 
+## What's new in 0.3: Books, page-curl reader and on-device narration
+
+- **Ebook reader** for EPUB and TXT with a Kindle-style **page-curl** (the renderer from my Folio news app), paper / sepia / night themes, adjustable type, table of contents and remembered position.
+- **Read aloud, fully offline**: [Piper](https://github.com/rhasspy/piper) neural voices run on the phone through [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx). The current sentence is highlighted and the page turns by itself while it reads. English (US/UK), Romanian, German, French and Spanish voices, ~65 MB each, downloaded once.
+- **Ebook to audiobook converter**: one tap converts a book chapter by chapter into AAC files on the phone. The book is playable after the first chapter while the rest keeps converting (and an interrupted run resumes). It shows up on Home as "Made on this phone" and plays with resume, bookmarks, speed and sleep timer like any other audiobook.
+- **Adaptive layout**: two-page spreads in the reader and list + detail panes on an unfolded Fold or tablet, a player that never needs scrolling, remaining time that follows the playback speed, and a **reading voice** picker in Settings.
+- **Free classics**: search Project Gutenberg from the Books tab.
+
 ## What's new in 0.2
 
 - **Resumes exactly where you stopped**: chapter and position are saved continuously; reopen the app and the mini player is back at that spot (smart rewind backs up a few seconds, more the longer you were away).
@@ -123,6 +131,7 @@ Host one for your own [Audiobookshelf](https://www.audiobookshelf.org) library, 
 git clone https://github.com/fspecii/vox-audiobooks.git
 cd vox-audiobooks
 echo "sdk.dir=/path/to/Android/Sdk" > local.properties
+./scripts/fetch-sherpa.sh      # one-time: downloads the sherpa-onnx AAR (on-device Piper TTS)
 ./gradlew assembleDebug        # needs JDK 17+ and Android SDK 35
 # -> app/build/outputs/apk/debug/app-debug.apk
 ```
@@ -133,6 +142,8 @@ echo "sdk.dir=/path/to/Android/Sdk" > local.properties
 - **Media3 / ExoPlayer** + `MediaSessionService` for background playback
 - **libtorrent4j** with a loopback HTTP server (Range support) so the player can stream pieces as they arrive
 - **youtubedl-android** (bundled yt-dlp) with a `ResolvingDataSource` that turns `yt://VIDEOID` into a fresh stream URL at playback time
+- **sherpa-onnx 1.13** (ONNX Runtime) running **Piper** VITS voices on-device, AAC encoding via `MediaCodec`
+- **Jsoup** for EPUB parsing, `StaticLayout` pagination, Folio's **CurlPager** for the page turn
 - **OkHttp**, **Coil**
 
 ## 🗺️ Roadmap

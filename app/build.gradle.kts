@@ -10,8 +10,9 @@ android {
         applicationId = "dev.vox.audio"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.2.1"
+        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+        versionCode = 4
+        versionName = "0.3.0"
     }
     buildTypes { release { isMinifyEnabled = false; signingConfig = signingConfigs.getByName("debug") } }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
@@ -40,6 +41,9 @@ dependencies {
     implementation("org.libtorrent4j:libtorrent4j-android-arm:2.1.0-39")
     implementation("org.libtorrent4j:libtorrent4j-android-x86_64:2.1.0-39")
     implementation("io.github.junkfood02.youtubedl-android:library:0.18.1")
+    implementation(files("libs/sherpa-onnx-1.13.8.aar"))      // on-device Piper TTS (scripts/fetch-sherpa.sh)
+    implementation("org.jsoup:jsoup:1.17.2")
+    implementation("org.apache.commons:commons-compress:1.26.2")
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-session:1.4.1")
     implementation("androidx.media3:media3-datasource-okhttp:1.4.1")
