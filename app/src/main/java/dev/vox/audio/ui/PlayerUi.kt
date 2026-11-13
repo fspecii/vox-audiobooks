@@ -1,6 +1,8 @@
 package dev.vox.audio.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.*
@@ -39,6 +41,7 @@ fun FullPlayer(vm: VM, onClose: () -> Unit) {
     var drag by remember { mutableStateOf<Float?>(null) }
     var speedMenu by remember { mutableStateOf(false) }
     var sleepMenu by remember { mutableStateOf(false) }
+    var marks by remember { mutableStateOf(false) }
     val wide = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 700
 
     Surface(Modifier.fillMaxSize()) {
@@ -49,7 +52,7 @@ fun FullPlayer(vm: VM, onClose: () -> Unit) {
             }
             val art: @Composable (Modifier) -> Unit = { Cover(b.cover, it, 20.dp) }
             val controls: @Composable (Modifier) -> Unit = { m ->
-                Column(m, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                Column(m.verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                     Text(b.title, style = MaterialTheme.typography.titleLarge, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     Text(b.chapters.getOrNull(vm.chapter)?.title.orEmpty(), color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -71,22 +74,33 @@ fun FullPlayer(vm: VM, onClose: () -> Unit) {
                         IconButton({ vm.next() }) { Icon(Icons.Rounded.SkipNext, "Next") }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        AssistChip({ vm.addBookmark() }, { Text("Bookmark") }, leadingIcon = { Icon(Icons.Rounded.BookmarkAdd, null) })
                         Box {
                             AssistChip({ speedMenu = true }, { Text("${vm.speed}x") }, leadingIcon = { Icon(Icons.Rounded.Speed, null) })
                             DropdownMenu(speedMenu, { speedMenu = false }) {
-                                listOf(0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f).forEach { s ->
+                                listOf(0.75f, 1f, 1.1f, 1.25f, 1.5f, 1.75f, 2f, 2.5f, 3f).forEach { s ->
                                     DropdownMenuItem({ Text("${s}x") }, { vm.changeSpeed(s); speedMenu = false })
                                 }
                             }
                         }
                         Box {
                             val left = if (vm.sleepEndsAt > 0) ((vm.sleepEndsAt - System.currentTimeMillis()) / 60000 + 1).toInt() else 0
-                            AssistChip({ sleepMenu = true }, { Text(if (left > 0) "$left min" else "Sleep") }, leadingIcon = { Icon(Icons.Rounded.Bedtime, null) })
+                            AssistChip({ sleepMenu = true }, { Text(if (left > 0) "$left min" else if (vm.sleepAtChapterEnd) "Chapter end" else "Sleep") }, leadingIcon = { Icon(Icons.Rounded.Bedtime, null) })
                             DropdownMenu(sleepMenu, { sleepMenu = false }) {
-                                listOf(0 to "Off", 15 to "15 min", 30 to "30 min", 45 to "45 min", 60 to "1 hour").forEach { (m, l) ->
+                                listOf(0 to "Off", -1 to "End of chapter", 15 to "15 min", 30 to "30 min", 45 to "45 min", 60 to "1 hour", 90 to "90 min").forEach { (m, l) ->
                                     DropdownMenuItem({ Text(l) }, { vm.setSleep(m); sleepMenu = false })
                                 }
                             }
+                        }
+                    }
+                    if (vm.bookmarks.isNotEmpty()) {
+                        TextButton({ marks = !marks }) { Text("Bookmarks (${vm.bookmarks.size})") }
+                        if (marks) vm.bookmarks.forEach { m ->
+                            ListItem(
+                                colors = ListItemDefaults.colors(containerColor = androidx.compose.ui.graphics.Color.Transparent),
+                                headlineContent = { Text(m.note, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                trailingContent = { IconButton({ vm.removeBookmark(m) }) { Icon(Icons.Rounded.Close, "Remove") } },
+                                modifier = Modifier.clickable { vm.jumpTo(m) })
                         }
                     }
                 }

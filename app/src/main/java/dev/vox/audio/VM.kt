@@ -42,6 +42,19 @@ class VM(app: Application) : AndroidViewModel(app) {
     var history by mutableStateOf(store.history())
     var searchFilter by mutableIntStateOf(0)      // 0 = all, 1 = torrents, 2 = youtube
     var torrentStatus by mutableStateOf<String?>(null)
+    var finished by mutableStateOf(store.finished())
+    var bookmarks by mutableStateOf<List<Bookmark>>(emptyList())     // bookmarks of the book now playing
+    var skipSilence by mutableStateOf(store.skipSilence)
+    var autoUpdate by mutableStateOf(store.autoUpdate)
+    var sleepAtChapterEnd by mutableStateOf(false)
+
+    // self-update
+    var update by mutableStateOf<Updater.Release?>(null)
+    var updateProgress by mutableStateOf<Float?>(null)
+    var updateReady by mutableStateOf<java.io.File?>(null)
+    var updateMsg by mutableStateOf<String?>(null)
+    var checkingUpdate by mutableStateOf(false)
+    val appVersion: String = Updater.currentVersion(app)
 
     // playback
     private var controller: MediaController? = null
@@ -54,12 +67,15 @@ class VM(app: Application) : AndroidViewModel(app) {
     var sleepEndsAt by mutableLongStateOf(0L)
     private var sleepJob: Job? = null
     private var searchJob: Job? = null
+    private var pausedAt = 0L
+    private var sleepStartChapter = -1
 
     init {
         Torrents.init(app)
         YT.attach(app)
         viewModelScope.launch { YT.updateIfStale() }
         connect()
+        if (store.autoUpdate && System.currentTimeMillis() - store.lastUpdateCheck > 6 * 3600_000L) checkUpdate(auto = true)
         viewModelScope.launch {
             val remote = store.addonUrls().map { u -> async { runCatching { HttpAddon.install(u) }.getOrNull() } }.awaitAll().filterNotNull()
             addons = builtin + remote
@@ -76,6 +92,8 @@ class VM(app: Application) : AndroidViewModel(app) {
                 if (c.isPlaying && ++tick % 10 == 0) saveProgress()
                 if (tick % 4 == 0) torrentStatus = Torrents.statusFor(c.currentMediaItem?.localConfiguration?.uri?.toString())
                 if (sleepEndsAt > 0 && System.currentTimeMillis() >= sleepEndsAt) { c.pause(); sleepEndsAt = 0 }
+                if (sleepAtChapterEnd && sleepStartChapter >= 0 && chapter != sleepStartChapter) { c.pause(); sleepAtChapterEnd = false }
+                if (updateReady != null && !c.isPlaying && store.autoUpdate) installUpdate()
             }
         }
     }
@@ -164,8 +182,23 @@ class VM(app: Application) : AndroidViewModel(app) {
     }
     fun closeDetail() { detail = null }
 
+    val continueList get() = history.filter { it.key !in finished }
     fun removeFromHistory(b: Book) { history = history.filter { it.key != b.key }; store.setHistory(history) }
-    fun fractionOf(b: Book) = store.progress(b.key)?.fraction?.takeIf { it > 0.005f }
+    fun fractionOf(b: Book) = if (b.key in finished) 1f else store.progress(b.key)?.fraction?.takeIf { it > 0.005f }
+    fun isFinished(b: Book) = b.key in finished
+    fun toggleFinished(b: Book) {
+        finished = if (b.key in finished) finished - b.key else finished + b.key
+        store.setFinished(finished)
+        if (b.key !in finished) return
+        store.saveProgress(Progress(b.key, 0, 0, System.currentTimeMillis(), 1f))
+    }
+    /** "Ch 5 · 12:34" for the Resume button. */
+    fun resumeLabel(b: Book): String? {
+        if (b.key in finished) return null
+        val p = store.progress(b.key) ?: return null
+        if (p.positionMs < 1000 && p.chapter == 0) return null
+        return "Ch ${p.chapter + 1} · ${dev.vox.audio.ui.fmtTime(p.positionMs)}"
+    }
 
     fun inLibrary(b: Book) = library.any { it.key == b.key }
     fun toggleLibrary(b: Book) {
@@ -181,11 +214,21 @@ class VM(app: Application) : AndroidViewModel(app) {
             val c = runCatching { f.get() }.getOrNull() ?: return@addListener
             controller = c
             c.addListener(object : Player.Listener {
-                override fun onIsPlayingChanged(playing: Boolean) { isPlaying = playing; if (!playing) saveProgress() }
-                override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) { chapter = c.currentMediaItemIndex }
+                override fun onIsPlayingChanged(playing: Boolean) {
+                    isPlaying = playing
+                    if (!playing) { pausedAt = System.currentTimeMillis(); saveProgress() }
+                }
+                override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) { chapter = c.currentMediaItemIndex; saveProgress() }
+                override fun onPlaybackStateChanged(state: Int) {
+                    if (state == Player.STATE_ENDED) nowBook?.let {
+                        finished = finished + it.key; store.setFinished(finished)
+                        store.saveProgress(Progress(it.key, 0, 0, System.currentTimeMillis(), 1f))
+                    }
+                }
             })
             isPlaying = c.isPlaying
-            if (nowBook == null && c.mediaItemCount > 0) restoreNowBook(c)
+            if (c.mediaItemCount > 0) { if (nowBook == null) restoreNowBook(c) } else restoreLast(c)
+            nowBook?.let { bookmarks = store.bookmarks(it.key) }
         }, ContextCompat.getMainExecutor(getApplication()))
     }
 
@@ -198,15 +241,36 @@ class VM(app: Application) : AndroidViewModel(app) {
             chapters = items.map { Chapter(it.mediaMetadata.title?.toString().orEmpty(), it.localConfiguration?.uri?.toString().orEmpty()) })
     }
 
+    /** Reopen the last book paused at the exact saved spot, so the mini player is there on launch. */
+    private fun restoreLast(c: MediaController) {
+        val b = store.lastBook() ?: return
+        if (b.chapters.isEmpty()) return
+        val p = store.progress(b.key)
+        val idx = (p?.chapter ?: 0).coerceIn(0, b.chapters.lastIndex)
+        val pos = ((p?.positionMs ?: 0) - 5000).coerceAtLeast(0)
+        nowBook = b; chapter = idx; position = pos
+        duration = b.chapters[idx].durationSec * 1000L
+        c.setMediaItems(mediaItems(b), idx, pos)
+        c.setPlaybackSpeed(store.speedFor(b.key) ?: speed)
+        speed = store.speedFor(b.key) ?: speed
+    }
+
+    private fun mediaItems(book: Book) = book.chapters.mapIndexed { i, ch ->
+        MediaItem.Builder().setUri(ch.url).setMediaId("${book.key}#$i")
+            .setMediaMetadata(MediaMetadata.Builder().setTitle(ch.title).setArtist(book.author).setAlbumTitle(book.title)
+                .setArtworkUri(book.cover?.let { Uri.parse(it) }).build()).build()
+    }
+
     fun play(book: Book, chapterIdx: Int = 0, posMs: Long = 0) {
         val c = controller ?: return
         if (book.chapters.isEmpty()) return
-        val items = book.chapters.mapIndexed { i, ch ->
-            MediaItem.Builder().setUri(ch.url).setMediaId("${book.key}#$i")
-                .setMediaMetadata(MediaMetadata.Builder().setTitle(ch.title).setArtist(book.author).setAlbumTitle(book.title)
-                    .setArtworkUri(book.cover?.let { Uri.parse(it) }).build()).build()
-        }
+        val items = mediaItems(book)
         nowBook = book
+        store.setLastBook(book)
+        bookmarks = store.bookmarks(book.key)
+        if (book.key in finished) { finished = finished - book.key; store.setFinished(finished) }
+        speed = store.speedFor(book.key) ?: speed
+        sleepStartChapter = -1
         history = (listOf(book.copy(chapters = emptyList())) + history.filter { it.key != book.key }).take(40)
         store.setHistory(history)
         c.setMediaItems(items, chapterIdx.coerceIn(0, items.lastIndex), posMs)
@@ -214,29 +278,108 @@ class VM(app: Application) : AndroidViewModel(app) {
         c.prepare(); c.play()
     }
 
+    /** Continue from the saved chapter + position (5 s of rewind). Loads the chapter list first if the card came from history. */
     fun resume(book: Book) {
         if (nowBook?.key == book.key) { togglePlay(); return }
         val p = store.progress(book.key)
-        play(book, p?.chapter ?: 0, p?.positionMs ?: 0)
+        val fresh = p == null || book.key in finished
+        val ch = if (fresh) 0 else p!!.chapter
+        val pos = if (fresh) 0L else (p!!.positionMs - 5000).coerceAtLeast(0)
+        if (book.chapters.isNotEmpty()) { play(book, ch, pos); return }
+        store.lastBook()?.takeIf { it.key == book.key && it.chapters.isNotEmpty() }?.let { play(it, ch, pos); return }
+        viewModelScope.launch {
+            val a = addonFor(book) ?: return@launch
+            runCatching { a.meta(book) }.onSuccess { m -> play(m.copy(cover = m.cover ?: book.cover, author = m.author.ifBlank { book.author }), ch, pos) }
+        }
     }
 
     fun progressOf(b: Book) = store.progress(b.key)
-    fun togglePlay() { controller?.let { if (it.isPlaying) it.pause() else it.play() } }
+    fun togglePlay() {
+        val c = controller ?: return
+        if (c.isPlaying) { c.pause(); return }
+        // smart rewind: the longer you were away, the more it backs up
+        val away = if (pausedAt > 0) System.currentTimeMillis() - pausedAt else 0L
+        val back = when { away > 30 * 60_000L -> 15_000L; away > 5 * 60_000L -> 8_000L; away > 60_000L -> 4_000L; else -> 0L }
+        if (back > 0 && c.currentPosition > back) c.seekTo(c.currentPosition - back)
+        if (c.playbackState == Player.STATE_IDLE) c.prepare()
+        c.play()
+    }
     fun seekTo(ms: Long) { controller?.seekTo(ms); position = ms }
     fun skip(ms: Long) { controller?.let { it.seekTo((it.currentPosition + ms).coerceAtLeast(0)) } }
     fun next() { controller?.seekToNextMediaItem() }
     fun prev() { controller?.let { if (it.currentPosition > 3000 || !it.hasPreviousMediaItem()) it.seekTo(0) else it.seekToPreviousMediaItem() } }
     fun gotoChapter(i: Int) { controller?.seekTo(i, 0) }
-    fun changeSpeed(s: Float) { speed = s; store.speed = s; controller?.setPlaybackSpeed(s) }
+    fun changeSpeed(s: Float) {
+        speed = s; store.speed = s; controller?.setPlaybackSpeed(s)
+        nowBook?.let { store.setSpeedFor(it.key, s) }
+    }
+
+    fun toggleSkipSilence() {
+        skipSilence = !skipSilence; store.skipSilence = skipSilence
+        PlaybackService.exo?.skipSilenceEnabled = skipSilence
+    }
+
+    // ---------- bookmarks ----------
+    fun addBookmark() {
+        val b = nowBook ?: return; val c = controller ?: return
+        val note = "${b.chapters.getOrNull(c.currentMediaItemIndex)?.title.orEmpty()} · ${dev.vox.audio.ui.fmtTime(c.currentPosition)}"
+        bookmarks = (bookmarks + Bookmark(b.key, c.currentMediaItemIndex, c.currentPosition, note, System.currentTimeMillis()))
+            .sortedWith(compareBy({ it.chapter }, { it.positionMs }))
+        store.setBookmarks(b.key, bookmarks)
+    }
+    fun removeBookmark(m: Bookmark) { bookmarks = bookmarks - m; store.setBookmarks(m.bookKey, bookmarks) }
+    fun jumpTo(m: Bookmark) { controller?.let { it.seekTo(m.chapter, m.positionMs); if (!it.isPlaying) togglePlay() } }
+
+    // ---------- self-update (GitHub releases) ----------
+    fun checkUpdate(auto: Boolean = false) = viewModelScope.launch {
+        checkingUpdate = true; if (!auto) updateMsg = null
+        runCatching { Updater.latest() }.fold({ r ->
+            store.lastUpdateCheck = System.currentTimeMillis()
+            if (r != null && Updater.isNewer(r.version, appVersion)) {
+                update = r
+                if (auto && store.autoUpdate) downloadUpdate()
+            } else { update = null; if (!auto) updateMsg = "You're on the latest version ($appVersion)" }
+        }, { if (!auto) updateMsg = "Update check failed: ${it.message}" })
+        checkingUpdate = false
+    }
+
+    fun downloadUpdate() = viewModelScope.launch {
+        val r = update ?: return@launch
+        if (updateProgress != null) return@launch
+        updateProgress = 0f; updateMsg = null
+        runCatching { Updater.download(getApplication(), r) { updateProgress = it } }
+            .onSuccess { updateReady = it }
+            .onFailure { updateMsg = "Download failed: ${it.message}" }
+        updateProgress = null
+    }
+
+    fun installUpdate() {
+        val f = updateReady ?: return
+        val app = getApplication<Application>()
+        if (!Updater.canInstall(app)) {
+            updateMsg = "Allow Vox to install updates, then tap Install again"
+            app.startActivity(android.content.Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                Uri.parse("package:${app.packageName}")).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+            return
+        }
+        updateReady = null          // avoid re-triggering from the ticker
+        saveProgress()
+        viewModelScope.launch { runCatching { Updater.install(app, f) }.onFailure { updateMsg = "Install failed: ${it.message}"; updateReady = f } }
+    }
+
+    fun toggleAutoUpdate() { autoUpdate = !autoUpdate; store.autoUpdate = autoUpdate }
 
     fun setSleep(minutes: Int) {
         sleepJob?.cancel()
+        sleepAtChapterEnd = minutes < 0
+        sleepStartChapter = if (minutes < 0) chapter else -1
         sleepEndsAt = if (minutes <= 0) 0 else System.currentTimeMillis() + minutes * 60_000L
     }
 
-    private fun saveProgress() {
+    fun saveProgress() {
         val b = nowBook ?: return
         val c = controller ?: return
+        if (c.playbackState == Player.STATE_IDLE || c.playbackState == Player.STATE_ENDED) return
         val n = c.mediaItemCount.coerceAtLeast(1)
         val within = if (c.duration > 0) c.currentPosition.toFloat() / c.duration else 0f
         store.saveProgress(Progress(b.key, c.currentMediaItemIndex, c.currentPosition, System.currentTimeMillis(),

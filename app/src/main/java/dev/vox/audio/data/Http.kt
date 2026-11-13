@@ -14,7 +14,7 @@ object Http {
         .build()
 
     suspend fun get(url: String): String = withContext(Dispatchers.IO) {
-        val req = Request.Builder().url(url).header("User-Agent", "Vox/0.1").build()
+        val req = Request.Builder().url(url).header("User-Agent", "Vox").build()
         client.newCall(req).execute().use { r ->
             if (!r.isSuccessful) error("HTTP ${r.code} for $url")
             r.body?.string() ?: ""
@@ -22,7 +22,7 @@ object Http {
     }
 
     suspend fun getBytes(url: String): ByteArray = withContext(Dispatchers.IO) {
-        val req = Request.Builder().url(url).header("User-Agent", "Vox/0.1").build()
+        val req = Request.Builder().url(url).header("User-Agent", "Vox").build()
         client.newCall(req).execute().use { r ->
             if (!r.isSuccessful) error("HTTP ${r.code} for $url")
             r.body?.bytes() ?: ByteArray(0)

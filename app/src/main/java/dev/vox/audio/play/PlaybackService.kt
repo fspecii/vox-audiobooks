@@ -17,6 +17,7 @@ import dev.vox.audio.data.YT
 
 /** Keeps playback alive in the background with lock-screen / Bluetooth / notification controls. */
 class PlaybackService : MediaSessionService() {
+    companion object { @Volatile var exo: ExoPlayer? = null }   // same process as the UI; touched on the main thread only
     private var session: MediaSession? = null
 
     override fun onCreate() {
@@ -36,6 +37,8 @@ class PlaybackService : MediaSessionService() {
             .setSeekBackIncrementMs(15_000)
             .setSeekForwardIncrementMs(30_000)
             .build()
+        player.skipSilenceEnabled = dev.vox.audio.data.Store(this).skipSilence
+        exo = player
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         session = MediaSession.Builder(this, player).setSessionActivity(open).build()
@@ -49,6 +52,7 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        exo = null
         session?.run { player.release(); release() }
         session = null
         super.onDestroy()

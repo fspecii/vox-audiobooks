@@ -31,13 +31,17 @@ import dev.vox.audio.data.Torrents
 // ------------------------------------------------------------------ HOME
 @Composable
 fun HomeScreen(vm: VM, onOpen: (Book) -> Unit) {
-    val hero = vm.history.firstOrNull() ?: vm.rows.firstNotNullOfOrNull { it.books.firstOrNull() }
+    val hero = vm.continueList.firstOrNull() ?: vm.rows.firstNotNullOfOrNull { it.books.firstOrNull() }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
         item { Hero(vm, hero, onOpen) }
-        if (vm.history.isNotEmpty()) item {
+        if (vm.update != null) item { UpdateBanner(vm) }
+        if (vm.continueList.isNotEmpty()) item {
             Shelf("Continue Listening") {
-                items(vm.history, key = { "h" + it.key }) { b ->
-                    BookCard(b, Modifier.width(150.dp), progress = vm.fractionOf(b)) { onOpen(b) }
+                items(vm.continueList, key = { "h" + it.key }) { b ->
+                    Column(Modifier.width(150.dp)) {
+                        BookCard(b, Modifier.fillMaxWidth(), progress = vm.fractionOf(b)) { vm.resume(b) }
+                        vm.resumeLabel(b)?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = VoxRed, modifier = Modifier.padding(top = 2.dp)) }
+                    }
                 }
             }
         }
@@ -62,14 +66,34 @@ private fun Hero(vm: VM, b: Book?, onOpen: (Book) -> Unit) {
             if (b.author.isNotBlank()) Text(b.author, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Button({ onOpen(b) }, colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black)) {
-                    Icon(Icons.Rounded.PlayArrow, null); Spacer(Modifier.width(4.dp)); Text("Play", fontWeight = FontWeight.Bold)
+                val label = vm.resumeLabel(b)
+                Button({ if (label != null) vm.resume(b) else onOpen(b) }, colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black)) {
+                    Icon(Icons.Rounded.PlayArrow, null); Spacer(Modifier.width(4.dp))
+                    Text(if (label != null) "Resume · $label" else "Play", fontWeight = FontWeight.Bold)
                 }
+                if (label != null) FilledTonalButton({ onOpen(b) }) { Text("Details") }
                 FilledTonalButton({ vm.toggleLibrary(b) }) {
                     Icon(if (vm.inLibrary(b)) Icons.Rounded.Check else Icons.Rounded.Add, null)
                     Spacer(Modifier.width(4.dp)); Text("My List")
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun UpdateBanner(vm: VM) {
+    val r = vm.update ?: return
+    Surface(color = VoxRed, shape = RoundedCornerShape(10.dp), modifier = Modifier.padding(16.dp, 12.dp, 16.dp, 0.dp).fillMaxWidth()) {
+        Row(Modifier.padding(start = 14.dp, end = 6.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Vox ${r.version} is available", fontWeight = FontWeight.Bold, color = Color.White)
+                val p = vm.updateProgress
+                if (p != null) LinearProgressIndicator({ p }, Modifier.fillMaxWidth().padding(top = 4.dp), color = Color.White, trackColor = Color(0x55FFFFFF))
+                else vm.updateMsg?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = Color.White) }
+            }
+            if (vm.updateProgress == null) TextButton({ if (vm.updateReady != null) vm.installUpdate() else vm.downloadUpdate() },
+                colors = ButtonDefaults.textButtonColors(contentColor = Color.White)) { Text(if (vm.updateReady != null) "Install" else "Update", fontWeight = FontWeight.Bold) }
         }
     }
 }
@@ -141,23 +165,24 @@ fun SearchScreen(vm: VM, onOpen: (Book) -> Unit) {
 @Composable
 fun MyListScreen(vm: VM, onOpen: (Book) -> Unit) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
-    val items = if (tab == 0) vm.library else vm.history
+    val items = when (tab) { 0 -> vm.library; 1 -> vm.history.filter { !vm.isFinished(it) }; else -> vm.history.filter { vm.isFinished(it) } }
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         Text("My Vox", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold,
             modifier = Modifier.padding(16.dp, 16.dp, 16.dp, 8.dp))
         Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilterChip(tab == 0, { tab = 0 }, { Text("Favorites (${vm.library.size})") })
-            FilterChip(tab == 1, { tab = 1 }, { Text("History (${vm.history.size})") })
+            FilterChip(tab == 1, { tab = 1 }, { Text("History (${vm.history.count { !vm.isFinished(it) }})") })
+            FilterChip(tab == 2, { tab = 2 }, { Text("Finished (${vm.history.count { vm.isFinished(it) }})") })
         }
         if (items.isEmpty()) Box(Modifier.fillMaxSize().padding(32.dp), Alignment.Center) {
-            Text(if (tab == 0) "Add books with the + / bookmark button." else "Books you listen to show up here.",
+            Text(when (tab) { 0 -> "Add books with the + button."; 1 -> "Books you listen to show up here."; else -> "Books you finish show up here." },
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else LazyVerticalGrid(GridCells.Adaptive(130.dp), contentPadding = PaddingValues(12.dp, 12.dp, 12.dp, 24.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(items, key = { it.key }) { b ->
                 Box {
                     BookCard(b, progress = vm.fractionOf(b)) { onOpen(b) }
-                    if (tab == 1) IconButton({ vm.removeFromHistory(b) }, Modifier.align(Alignment.TopEnd).size(32.dp)) {
+                    if (tab != 0) IconButton({ vm.removeFromHistory(b) }, Modifier.align(Alignment.TopEnd).size(32.dp)) {
                         Icon(Icons.Rounded.Close, "Remove", tint = Color.White)
                     }
                 }
@@ -196,7 +221,35 @@ fun AddonsScreen(vm: VM) {
             )
         }
         item {
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(24.dp))
+            Text("App", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            ListItem(
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                headlineContent = { Text("Vox ${vm.appVersion}") },
+                supportingContent = { Text(vm.updateMsg ?: vm.update?.let { "Version ${it.version} available" } ?: "Updates come from GitHub Releases") },
+                trailingContent = {
+                    when {
+                        vm.updateProgress != null -> CircularProgressIndicator(Modifier.size(24.dp), color = VoxRed)
+                        vm.updateReady != null -> TextButton({ vm.installUpdate() }) { Text("Install") }
+                        vm.update != null -> TextButton({ vm.downloadUpdate() }) { Text("Update") }
+                        vm.checkingUpdate -> CircularProgressIndicator(Modifier.size(24.dp), color = VoxRed)
+                        else -> TextButton({ vm.checkUpdate() }) { Text("Check") }
+                    }
+                },
+            )
+            ListItem(
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                headlineContent = { Text("Update automatically") },
+                supportingContent = { Text("Check on launch, download and install when nothing is playing") },
+                trailingContent = { Switch(vm.autoUpdate, { vm.toggleAutoUpdate() }) },
+            )
+            ListItem(
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                headlineContent = { Text("Skip silence") },
+                supportingContent = { Text("Trim pauses in the narration") },
+                trailingContent = { Switch(vm.skipSilence, { vm.toggleSkipSilence() }) },
+            )
+            Spacer(Modifier.height(8.dp))
             ListItem(
                 colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                 headlineContent = { Text("Torrent cache") },
@@ -235,11 +288,15 @@ fun DetailScreen(vm: VM, b: Book, onBack: (() -> Unit)?) {
                     colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color.Black)) {
                     Icon(if (playingThis && vm.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, null)
                     Spacer(Modifier.width(6.dp))
-                    Text(if (playingThis && vm.isPlaying) "Pause" else if (playingThis || progress != null) "Continue" else "Play", fontWeight = FontWeight.Bold)
+                    val rl = vm.resumeLabel(b)
+                    Text(if (playingThis && vm.isPlaying) "Pause" else if (playingThis) "Continue" else if (rl != null) "Continue · $rl" else "Play", fontWeight = FontWeight.Bold)
                 }
                 FilledTonalButton({ vm.toggleLibrary(b) }) {
                     Icon(if (vm.inLibrary(b)) Icons.Rounded.Check else Icons.Rounded.Add, null)
                     Spacer(Modifier.width(4.dp)); Text("My List")
+                }
+                IconButton({ vm.toggleFinished(b) }) {
+                    Icon(Icons.Rounded.TaskAlt, "Mark finished", tint = if (vm.isFinished(b)) VoxRed else MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             if (playingThis) vm.torrentStatus?.let {

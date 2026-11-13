@@ -19,6 +19,8 @@ class MainActivity : ComponentActivity() {
         setContent { VoxTheme { VoxApp(vm) } }
     }
 
+    override fun onStop() { vm.saveProgress(); super.onStop() }
+
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); handle(intent) }
 
     /** stremio://… or vox://… links install an addon. */

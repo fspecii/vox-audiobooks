@@ -40,6 +40,13 @@
   <img src="docs/search.jpg" alt="Vox search across all audiobook sources" width="46%">
 </p>
 
+## What's new in 0.2
+
+- **Resumes exactly where you stopped**: chapter and position are saved continuously; reopen the app and the mini player is back at that spot (smart rewind backs up a few seconds, more the longer you were away).
+- **Resume buttons** with `Ch 5 · 12:34` on the hero and Continue Listening cards, **Finished** shelf and mark-as-finished.
+- **Bookmarks** at any timestamp, per-book speed memory, speeds up to 3x, **skip silence**, sleep timer with *end of chapter*.
+- **Auto-update from GitHub Releases**: checks on launch, downloads the new APK and installs it when nothing is playing (Settings in the Addons tab).
+
 ## 🎯 Why Vox?
 
 Audiobook apps lock you into one store. Vox does for audiobooks what [Stremio](https://www.stremio.com) does for video: **one clean, Netflix-style app that pulls catalogs from many sources through addons**, and plays whatever you pick: free public-domain classics, YouTube readings, torrents, or your own server.

@@ -28,3 +28,5 @@ interface Addon {
 }
 
 data class Progress(val bookKey: String, val chapter: Int, val positionMs: Long, val updatedAt: Long, val fraction: Float = 0f)
+
+data class Bookmark(val bookKey: String, val chapter: Int, val positionMs: Long, val note: String, val createdAt: Long)

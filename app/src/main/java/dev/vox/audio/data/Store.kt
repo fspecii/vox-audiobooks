@@ -30,6 +30,44 @@ class Store(ctx: Context) {
     fun saveProgress(g: Progress) = p.edit().putString("p:${g.bookKey}",
         JSONObject().put("c", g.chapter).put("t", g.positionMs).put("u", g.updatedAt).put("f", g.fraction.toDouble()).toString()).apply()
 
+    // ---- last played book (with chapters) so the app reopens exactly where you stopped
+    fun lastBook(): Book? = runCatching {
+        val o = JSONObject(p.getString("last", null) ?: return null)
+        val ch = o.getJSONArray("ch")
+        toBook(o).copy(narrator = null, chapters = (0 until ch.length()).map { i ->
+            val c = ch.getJSONObject(i); Chapter(c.getString("t"), c.getString("u"), c.optInt("d"))
+        })
+    }.getOrNull()
+    fun setLastBook(b: Book?) = p.edit().apply {
+        if (b == null) remove("last") else putString("last", toJson(b).put("ch", JSONArray(b.chapters.map {
+            JSONObject().put("t", it.title).put("u", it.url).put("d", it.durationSec) })).toString())
+    }.apply()
+
+    // ---- bookmarks
+    fun bookmarks(key: String): List<Bookmark> = runCatching {
+        val a = JSONArray(p.getString("bm:$key", "[]"))
+        (0 until a.length()).map { val o = a.getJSONObject(it); Bookmark(key, o.getInt("c"), o.getLong("t"), o.optString("n"), o.getLong("u")) }
+    }.getOrDefault(emptyList())
+    fun setBookmarks(key: String, l: List<Bookmark>) = p.edit().putString("bm:$key", JSONArray(l.map {
+        JSONObject().put("c", it.chapter).put("t", it.positionMs).put("n", it.note).put("u", it.createdAt) }).toString()).apply()
+
+    // ---- finished books
+    fun finished(): Set<String> = arr("finished").let { a -> (0 until a.length()).map { a.getString(it) }.toSet() }
+    fun setFinished(s: Set<String>) = p.edit().putString("finished", JSONArray(s.toList()).toString()).apply()
+
+    // ---- per-book speed + settings
+    fun speedFor(key: String): Float? = p.getFloat("sp:$key", 0f).takeIf { it > 0f }
+    fun setSpeedFor(key: String, v: Float) = p.edit().putFloat("sp:$key", v).apply()
+    var skipSilence: Boolean
+        get() = p.getBoolean("skipSilence", false)
+        set(v) = p.edit().putBoolean("skipSilence", v).apply()
+    var autoUpdate: Boolean
+        get() = p.getBoolean("autoUpdate", true)
+        set(v) = p.edit().putBoolean("autoUpdate", v).apply()
+    var lastUpdateCheck: Long
+        get() = p.getLong("updChecked", 0L)
+        set(v) = p.edit().putLong("updChecked", v).apply()
+
     var speed: Float
         get() = p.getFloat("speed", 1f)
         set(v) = p.edit().putFloat("speed", v).apply()
