@@ -11,6 +11,7 @@ import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import kotlinx.coroutines.launch
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -159,6 +160,15 @@ fun SearchScreen(vm: VM, onOpen: (Book) -> Unit) {
         Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             chips.forEach { (l, id) -> FilterChip(f == id, { vm.setFilter(id) }, { Text(l) }) }
         }
+        if (vm.query.isBlank() && vm.recent.isNotEmpty()) {
+            Row(Modifier.padding(16.dp, 10.dp, 16.dp, 0.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Recent", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+                TextButton({ vm.clearRecent() }) { Text("Clear") }
+            }
+            androidx.compose.foundation.lazy.LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(vm.recent.size) { i -> AssistChip({ vm.search(vm.recent[i]) }, { Text(vm.recent[i], maxLines = 1) }, leadingIcon = { Icon(Icons.Rounded.History, null, Modifier.size(18.dp)) }) }
+            }
+        }
         if (vm.bookBusy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(16.dp, 8.dp), color = VoxRed)
         vm.bookMsg?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp, 4.dp)) }
         val nothing = vm.results.isEmpty() && vm.gutResults.isEmpty()
@@ -199,6 +209,7 @@ fun MyListScreen(vm: VM, onOpen: (Book) -> Unit) {
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         Text("My Vox", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold,
             modifier = Modifier.padding(16.dp, 16.dp, 16.dp, 8.dp))
+        StatsCard(vm)
         Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilterChip(tab == 0, { tab = 0 }, { Text("Favorites (${vm.library.size})") })
             FilterChip(tab == 1, { tab = 1 }, { Text("History (${vm.history.count { !vm.isFinished(it) }})") })
@@ -288,6 +299,14 @@ fun AddonsScreen(vm: VM) {
                     })
                 },
                 trailingContent = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        val pv = dev.vox.audio.reader.Voices.previewing
+                        val sc = rememberCoroutineScope()
+                        IconButton({ sc.launch {
+                            val id = vm.voiceId.ifBlank { dev.vox.audio.reader.Voices.all[0].id }
+                            if (!dev.vox.audio.reader.Voices.installed(id)) dev.vox.audio.reader.Voices.install(id)
+                            dev.vox.audio.reader.Voices.preview(id, "en")
+                        } }, enabled = !pv) { if (pv) CircularProgressIndicator(Modifier.size(20.dp), color = VoxRed, strokeWidth = 2.dp) else Icon(Icons.Rounded.RecordVoiceOver, "Preview this voice") }
                     Box {
                         TextButton({ voiceMenu = true }) { Text("Change") }
                         DropdownMenu(voiceMenu, { voiceMenu = false }) {
@@ -297,6 +316,7 @@ fun AddonsScreen(vm: VM) {
                                     { vm.setVoice(v.id); voiceMenu = false }, leadingIcon = { if (v.id == vm.voiceId) Icon(Icons.Rounded.Check, null) })
                             }
                         }
+                    }
                     }
                 },
             )
@@ -409,6 +429,70 @@ fun DetailScreen(vm: VM, b: Book, onBack: (() -> Unit)?) {
                 leadingContent = { if (current) Icon(Icons.Rounded.GraphicEq, null, tint = VoxRed) else Text("${i + 1}") },
                 modifier = Modifier.clickable { if (playingThis) vm.gotoChapter(i) else vm.play(b, i) },
             )
+        }
+    }
+}
+
+// ------------------------------------------------------------------ STATS
+@Composable
+private fun StatsCard(vm: VM) {
+    @Suppress("UNUSED_EXPRESSION") vm.statsTick
+    val st = vm.store
+    val today = st.listenedOn(0); val week = (0..6).sumOf { st.listenedOn(it) }; val streak = st.streak()
+    if (st.totalListened < 60_000) return
+    fun fmt(ms: Long): String { val m = ms / 60_000; return if (m >= 60) "${m / 60}h ${"%02d".format(m % 60)}m" else "${m}m" }
+    val days = (6 downTo 0).map { st.listenedOn(it) }; val max = (days.maxOrNull() ?: 1L).coerceAtLeast(1L)
+    Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .5f), modifier = Modifier.padding(16.dp, 4.dp, 16.dp, 12.dp).fillMaxWidth()) {
+        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                    Column { Text(fmt(today), fontWeight = FontWeight.Bold, fontSize = 20.sp); Text("today", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    Column { Text(fmt(week), fontWeight = FontWeight.Bold, fontSize = 20.sp); Text("this week", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    Column { Text(if (streak > 0) "$streak 🔥" else "0", fontWeight = FontWeight.Bold, fontSize = 20.sp); Text("day streak", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                }
+                Spacer(Modifier.height(4.dp))
+                Text("${fmt(st.totalListened)} listened in total", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Row(Modifier.height(44.dp), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.Bottom) {
+                days.forEachIndexed { i, d ->
+                    Box(Modifier.width(8.dp).fillMaxHeight((d / max.toFloat()).coerceIn(.08f, 1f)).clip(RoundedCornerShape(3.dp)).background(if (i == 6) VoxRed else VoxRed.copy(alpha = .45f)))
+                }
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------------ FIRST RUN
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+fun Onboarding(vm: VM) {
+    val pages = listOf(
+        Triple(Icons.Rounded.Headphones, "Audiobooks from everywhere", "LibriVox, the Internet Archive, YouTube and torrents in one place. Add Stremio-style addons for more."),
+        Triple(Icons.Rounded.MenuBook, "Read or listen to any book", "Open a free classic or your own EPUB, then choose: page-curl reading or an audiobook made on your phone."),
+        Triple(Icons.Rounded.AutoAwesome, "Audio made on your phone", "A natural voice reads the book in short parts, starting where you are. Play after the first minute while the rest is made. Switch between listening and reading at the same sentence."),
+    )
+    val pager = androidx.compose.foundation.pager.rememberPagerState { pages.size }
+    val scope = rememberCoroutineScope()
+    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+        Column(Modifier.fillMaxSize().systemBarsPadding().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Row(Modifier.fillMaxWidth()) { Spacer(Modifier.weight(1f)); TextButton({ vm.finishOnboarding() }) { Text("Skip") } }
+            androidx.compose.foundation.pager.HorizontalPager(pager, Modifier.weight(1f)) { i ->
+                val (icon, title, body) = pages[i]
+                Column(Modifier.fillMaxSize().widthIn(max = 480.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                    Box(Modifier.size(120.dp).clip(androidx.compose.foundation.shape.CircleShape).background(VoxRed.copy(alpha = .16f)), Alignment.Center) { Icon(icon, null, Modifier.size(60.dp), tint = VoxRed) }
+                    Spacer(Modifier.height(32.dp))
+                    Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    Spacer(Modifier.height(12.dp))
+                    Text(body, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(16.dp)) {
+                repeat(pages.size) { i -> Box(Modifier.size(if (pager.currentPage == i) 22.dp else 8.dp, 8.dp).clip(androidx.compose.foundation.shape.CircleShape).background(if (pager.currentPage == i) VoxRed else MaterialTheme.colorScheme.onSurface.copy(alpha = .25f))) }
+            }
+            Button({ if (pager.currentPage == pages.lastIndex) vm.finishOnboarding() else scope.launch { pager.animateScrollToPage(pager.currentPage + 1) } },
+                Modifier.fillMaxWidth().widthIn(max = 480.dp), colors = ButtonDefaults.buttonColors(containerColor = VoxRed, contentColor = Color.White)) {
+                Text(if (pager.currentPage == pages.lastIndex) "Start listening" else "Next", fontWeight = FontWeight.Bold)
+            }
         }
     }
 }

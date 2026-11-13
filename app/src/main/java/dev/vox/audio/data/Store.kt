@@ -71,6 +71,21 @@ class Store(ctx: Context) {
     fun tuneRaw(kind: String): String? = p.getString("tune:$kind", null)
     fun setTuneRaw(kind: String, v: String) = p.edit().putString("tune:$kind", v).apply()
 
+    // ---- listening stats (ms per day), onboarding, recent searches
+    private fun day(offset: Int = 0) = java.time.LocalDate.now().minusDays(offset.toLong()).toString()
+    fun addListened(ms: Long) { val k = "st:${day()}"; p.edit().putLong(k, p.getLong(k, 0L) + ms).apply() }
+    fun listenedOn(offset: Int) = p.getLong("st:${day(offset)}", 0L)
+    fun streak(): Int { var n = 0; var o = if (listenedOn(0) > 60_000) 0 else 1; while (o < 4000 && listenedOn(o) > 60_000) { n++; o++ }; return n }
+    var totalListened: Long
+        get() = p.getLong("stTotal", 0L)
+        set(v) = p.edit().putLong("stTotal", v).apply()
+    var onboarded: Boolean
+        get() = p.getBoolean("onboarded", false)
+        set(v) = p.edit().putBoolean("onboarded", v).apply()
+    fun recentSearches(): List<String> = arr("recent").let { a -> (0 until a.length()).map { a.getString(it) } }
+    fun pushSearch(q: String) = p.edit().putString("recent", JSONArray((listOf(q) + recentSearches().filter { !it.equals(q, true) }).take(8)).toString()).apply()
+    fun clearSearches() = p.edit().remove("recent").apply()
+
     // ---- reader
     fun readPos(id: String): Pair<Int, Int>? = p.getString("rd:$id", null)?.split(':')?.let { (it.getOrNull(0)?.toIntOrNull() ?: 0) to (it.getOrNull(1)?.toIntOrNull() ?: 0) }
     fun setReadPos(id: String, chapter: Int, offset: Int) = p.edit().putString("rd:$id", "$chapter:$offset").apply()

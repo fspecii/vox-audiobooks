@@ -88,6 +88,32 @@ object Voices {
     }
 
     /** A fresh, independent model instance (use several for parallel generation). */
+    var previewing by mutableStateOf(false); private set
+    private val samples = mapOf("en" to "Call me Ishmael. Some years ago, never mind how long precisely, I thought I would sail about a little.",
+        "ro" to "Era o zi rece și senină de aprilie, iar ceasurile băteau ora treisprezece.",
+        "de" to "Es war ein kalter, klarer Tag im April, und die Uhren schlugen dreizehn.",
+        "fr" to "C'était une journée froide et claire d'avril, et les horloges sonnaient treize heures.",
+        "es" to "Era un día frío y claro de abril, y los relojes daban las trece.")
+
+    /** Speaks one sentence with [id] so the voice can be judged before committing to a whole book. */
+    suspend fun preview(id: String, lang: String) = withContext(Dispatchers.Default) {
+        if (previewing || !installed(id)) return@withContext
+        previewing = true
+        var sy: Synth? = null; var t: AudioTrack? = null
+        try {
+            val v = byId(id) ?: return@withContext
+            val l = if (v.lang == "*") lang else v.lang
+            sy = newSynth(id, l, 2)
+            val pcm = sy.speak(samples[l] ?: samples.getValue("en"), 1f).toPcm()
+            t = AudioTrack.Builder()
+                .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+                .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(sy.rate).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
+                .setBufferSizeInBytes(pcm.size * 2).setTransferMode(AudioTrack.MODE_STATIC).build()
+            t.write(pcm, 0, pcm.size); t.play()
+            delay(pcm.size * 1000L / sy.rate + 300)
+        } finally { runCatching { t?.release() }; sy?.release(); previewing = false }
+    }
+
     fun newSynth(id: String, lang: String, threads: Int): Synth {
         val v = byId(id) ?: error("Unknown voice")
         val root = dir(id)
@@ -303,6 +329,7 @@ object Converter {
 
                 while (true) {
                     ensureActive()
+                    guard(app)
                     val hint = if (jump >= 0) jump.also { jump = -1 } else next
                     val pid = (hint until parts.size).firstOrNull { it !in doneIds } ?: (0 until parts.size).firstOrNull { it !in doneIds } ?: break
                     val part = parts[pid]
@@ -347,6 +374,20 @@ object Converter {
             } catch (e: CancellationException) { status = "Paused: tap Listen to continue"
             } catch (e: Throwable) { status = "Conversion failed: ${e.message}"
             } finally { pool.forEach { it.release() }; bookId = null; activePart = -1 }
+        }
+    }
+
+    /** Pause politely when the battery is low (and not charging); stop with a clear message when storage is nearly full. */
+    private suspend fun guard(ctx: Context) {
+        val free = android.os.StatFs(ctx.filesDir.path).availableBytes
+        if (free < 250L * 1024 * 1024) error("Storage is almost full (${free / 1_048_576} MB left). Free some space and tap Listen again.")
+        while (true) {
+            val i = ctx.registerReceiver(null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED))
+            val level = i?.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, 100) ?: 100
+            val plugged = (i?.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
+            if (level >= 15 || plugged) { return }
+            status = "Waiting: battery at $level%. Plug in to continue"
+            delay(15_000); currentCoroutineContext().ensureActive()
         }
     }
 

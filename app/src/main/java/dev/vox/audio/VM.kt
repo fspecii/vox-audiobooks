@@ -40,6 +40,11 @@ class VM(app: Application) : AndroidViewModel(app) {
     var detailError by mutableStateOf<String?>(null)
     var library by mutableStateOf(store.library())
     var history by mutableStateOf(store.history())
+    var statsTick by mutableIntStateOf(0)                         // bumps while playing so the stats card refreshes
+    var recent by mutableStateOf(store.recentSearches())
+    var onboarded by mutableStateOf(store.onboarded || store.history().isNotEmpty())
+    fun finishOnboarding() { onboarded = true; store.onboarded = true }
+    fun clearRecent() { store.clearSearches(); recent = emptyList() }
     var searchFilter by mutableIntStateOf(0)      // 0 = all, 1 = torrents, 2 = youtube, 3 = books
     var gutResults by mutableStateOf<List<dev.vox.audio.reader.GutBook>>(emptyList())
     var bookBusy by mutableStateOf(false)
@@ -95,6 +100,7 @@ class VM(app: Application) : AndroidViewModel(app) {
                 position = c.currentPosition
                 chapter = c.currentMediaItemIndex
                 duration = c.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: ((nowBook?.chapters?.getOrNull(chapter)?.durationSec ?: 0) * 1000L)
+                if (c.isPlaying) { val add = (500 * speed).toLong(); store.addListened(add); store.totalListened += add; statsTick++ }
                 if (c.isPlaying && ++tick % 10 == 0) saveProgress()
                 if (loop % 4 == 0) torrentStatus = Torrents.statusFor(c.currentMediaItem?.localConfiguration?.uri?.toString())
                 if (sleepEndsAt > 0 && System.currentTimeMillis() >= sleepEndsAt) { c.pause(); sleepEndsAt = 0 }
@@ -296,6 +302,7 @@ class VM(app: Application) : AndroidViewModel(app) {
                 .map { (a, c) -> async { runCatching { a.catalog(c.id, q, 0) }.getOrDefault(emptyList()) } }.awaitAll()
             results = all.flatten()
             searching = false
+            if (q.trim().length >= 3 && !isRef) { store.pushSearch(q.trim()); recent = store.recentSearches() }
         }
     }
 

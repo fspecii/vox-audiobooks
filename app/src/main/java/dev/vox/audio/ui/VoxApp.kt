@@ -98,6 +98,7 @@ fun VoxApp(vm: VM) {
                     }
                 }
             }
+            if (!vm.onboarded) Onboarding(vm)
             if (player) run {
                 FullPlayer(vm) { vm.playerOpen = false }
             }
