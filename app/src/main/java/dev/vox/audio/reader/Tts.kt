@@ -151,107 +151,6 @@ object Sentences {
 
 private fun FloatArray.toPcm() = ShortArray(size) { (this[it].coerceIn(-1f, 1f) * 32767f).toInt().toShort() }
 
-/** Reads an open ebook aloud sentence by sentence; `cursor` is the sentence being spoken (chapter + char range). */
-object Narrator {
-    enum class S { Idle, Loading, Playing, Paused }
-    var state by mutableStateOf(S.Idle); private set
-    var chapter by mutableIntStateOf(-1); private set
-    var cursor by mutableStateOf<IntRange?>(null); private set
-    var bookId by mutableStateOf<String?>(null); private set
-    var title by mutableStateOf(""); private set
-    var speed by mutableFloatStateOf(1f)
-    var message by mutableStateOf<String?>(null)
-
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private var job: Job? = null
-    private var gen = 0                       // identifies the current run; a stale run must not touch shared state
-    private var track: AudioTrack? = null
-    private val paused = MutableStateFlow(false)
-    private lateinit var audio: AudioManager
-    private var focus: AudioFocusRequest? = null
-
-    private class Chunk(val chapter: Int, val range: IntRange, val pcm: ShortArray)
-
-    fun start(ctx: Context, book: EBook, plain: List<String>, fromChapter: Int, fromOffset: Int, voiceId: String) {
-        val lang = book.lang
-        val old = job
-        stopInternal()
-        val my = ++gen
-        val app = ctx.applicationContext
-        audio = app.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        bookId = book.id; title = book.title; state = S.Loading; message = null; paused.value = false
-        NarrationService.start(app)
-        job = scope.launch {
-            old?.join()                         // the previous run must finish releasing its AudioTrack before we create ours
-            try { run(app, plain, fromChapter, fromOffset, voiceId, lang) }
-            catch (e: CancellationException) { throw e }
-            catch (e: Throwable) { if (gen == my) message = "Narration failed: ${e.message}" }
-            finally { release(); if (gen == my) { state = S.Idle; cursor = null } }
-        }
-    }
-
-    private suspend fun run(ctx: Context, plain: List<String>, fromChapter: Int, fromOffset: Int, voiceId: String, lang: String) = coroutineScope {
-        val sy = Voices.synth(voiceId, lang)
-        val rate = sy.rate
-        val minBuf = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
-        val t = AudioTrack.Builder()
-            .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
-            .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(rate).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
-            .setBufferSizeInBytes(maxOf(minBuf, rate)).setTransferMode(AudioTrack.MODE_STREAM).build()
-        track = t
-        focus = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-            .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
-            .setOnAudioFocusChangeListener { c -> if (c == AudioManager.AUDIOFOCUS_LOSS || c == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) pause() }.build()
-        audio.requestAudioFocus(focus!!)
-
-        val q = Channel<Chunk>(3)
-        val producer = launch {
-            for (ci in fromChapter until plain.size) {
-                val text = plain[ci]
-                for (s in Sentences.split(text)) {
-                    if (ci == fromChapter && s.end <= fromOffset) continue
-                    val t0 = System.nanoTime()
-                    val g = sy.speak(text.substring(s.start, s.end).replace('\n', ' '), speed)
-                    android.util.Log.d("VoxTts", "chapter $ci ${s.start}-${s.end}: ${g.size * 1000L / rate} ms audio in ${(System.nanoTime() - t0) / 1_000_000} ms")
-                    val gap = ShortArray(rate * 12 / 100)
-                    q.send(Chunk(ci, s.start until s.end, g.toPcm() + gap))
-                }
-            }
-            q.close()
-        }
-        t.play()
-        try {
-            for (c in q) {
-                chapter = c.chapter; cursor = c.range
-                var o = 0; val slice = rate / 4
-                while (o < c.pcm.size) {
-                    if (paused.value) { t.pause(); state = S.Paused; paused.first { !it }; t.play() }
-                    state = S.Playing
-                    val n = minOf(slice, c.pcm.size - o)
-                    t.write(c.pcm, o, n); o += n
-                }
-            }
-            t.stop()
-        } finally { producer.cancel() }
-    }
-
-    fun pause() { paused.value = true; track?.pause(); if (state == S.Playing) state = S.Paused }
-    fun resume() { paused.value = false }
-    fun toggle() { if (state == S.Playing) pause() else if (state == S.Paused) resume() }
-    fun stop() { stopInternal() }
-
-    private fun stopInternal() {
-        paused.value = false
-        runCatching { track?.pause(); track?.flush() }
-        job?.cancel(); job = null
-    }
-
-    private fun release() {
-        runCatching { track?.release() }; track = null
-        focus?.let { runCatching { audio.abandonAudioFocusRequest(it) } }; focus = null
-    }
-}
-
 /** Encodes PCM to AAC in an .m4a container. */
 class AacWriter(path: String, private val rate: Int) {
     private val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
@@ -310,63 +209,87 @@ class AacWriter(path: String, private val rate: Int) {
 }
 
 /**
- * Turns an ebook into an audiobook, one chapter at a time. Each finished chapter is written to book.json straight away,
- * so the book is playable after the first chapter while the rest keeps converting (and an interrupted run resumes).
+ * Turns an ebook into an audiobook made of PARTS (a few minutes each). Parts are generated starting from wherever you want to listen
+ * (then the rest of the book), each one lands in book.json as soon as it is done, and the player appends it to its playlist: one
+ * seamless audiobook that is already playable after the first part. An interrupted run resumes.
  */
 object Converter {
     var bookId by mutableStateOf<String?>(null); private set      // book being converted right now
-    var readyId by mutableStateOf<String?>(null); private set     // book whose `ready` chapters can be played
+    var readyId by mutableStateOf<String?>(null); private set     // book whose `ready` parts can be played
     var ready by mutableIntStateOf(0); private set
     var total by mutableIntStateOf(0); private set
     var progress by mutableFloatStateOf(0f); private set
     var status by mutableStateOf<String?>(null)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var job: Job? = null
+    @Volatile private var jump = -1                                // where the user wants audio NOW (overrides the sequential order once)
     val running get() = job?.isActive == true
 
     fun audiobookDir(ctx: Context, id: String) = File(ctx.filesDir, "audiobooks/$id")
+    fun partFile(ctx: Context, id: String, pid: Int) = File(audiobookDir(ctx, id), "%04d.m4a".format(pid + 1))
+    fun isReady(ctx: Context, id: String, pid: Int): Boolean =
+        runCatching { org.json.JSONObject(File(audiobookDir(ctx, id), "book.json").readText()).getJSONArray("chapters").let { a -> (0 until a.length()).any { a.getJSONObject(it).optInt("pid", -1) == pid } } }.getOrDefault(false)
 
-    private fun writeJson(dir: File, book: EBook, cover: String?, chapters: org.json.JSONArray) {
+    private fun writeJson(dir: File, book: EBook, cover: String?, total: Int, parts: List<org.json.JSONObject>) {
         val tmp = File(dir, "book.json.tmp")
-        tmp.writeText(org.json.JSONObject().put("id", book.id).put("title", book.title).put("author", book.author)
-            .put("cover", cover ?: "").put("total", book.chapters.size).put("chapters", chapters).toString())
+        tmp.writeText(org.json.JSONObject().put("v", 2).put("id", book.id).put("title", book.title).put("author", book.author)
+            .put("cover", cover ?: "").put("total", total).put("chapters", org.json.JSONArray(parts.sortedBy { it.getInt("pid") })).toString())
         tmp.renameTo(File(dir, "book.json"))
     }
 
-    fun start(ctx: Context, book: EBook, voiceId: String, onChapter: () -> Unit) {
+    /** Start converting (or, if this book is already being converted, just move the front of the queue to [fromPart]). */
+    fun start(ctx: Context, book: EBook, voiceId: String, fromPart: Int, onPart: () -> Unit) {
+        if (running && bookId == book.id) { jump = fromPart; return }
         if (running) return
         val app = ctx.applicationContext
-        bookId = book.id; progress = 0f; status = "Preparing voice…"; total = book.chapters.size
+        // nothing left to generate? (every part already exists)
+        runCatching {
+            val o = org.json.JSONObject(File(audiobookDir(app, book.id), "book.json").readText())
+            if (o.optInt("v") == 2 && o.getJSONArray("chapters").length() >= o.getInt("total") && o.getInt("total") == Plan.parts(book).size) return
+        }
+        bookId = book.id; progress = 0f; status = "Preparing voice…"; jump = -1
         NarrationService.start(app)
         job = scope.launch {
             var pool: List<Synth> = emptyList()
             try {
+                val parts = Plan.parts(book)
+                total = parts.size
+                val dir = audiobookDir(app, book.id)
+                // an older (whole-chapter) conversion has a different layout: start clean
+                runCatching { if (File(dir, "book.json").exists() && org.json.JSONObject(File(dir, "book.json").readText()).optInt("v") != 2) dir.deleteRecursively() }
+                dir.mkdirs()
+                val cover = Ebooks.coverFile(book.id)?.let { "file://${it.path}" }
+                val done = ArrayList<org.json.JSONObject>()
+                runCatching {
+                    val old = org.json.JSONObject(File(dir, "book.json").readText()).getJSONArray("chapters")
+                    for (i in 0 until old.length()) if (File(old.getJSONObject(i).getString("file")).exists()) done.add(old.getJSONObject(i))
+                }
+                val doneIds = done.map { it.getInt("pid") }.toMutableSet()
+                readyId = book.id; ready = doneIds.size
+
                 val cfg = Tuner.best(Voices.byId(voiceId)?.kind ?: "piper") ?: Tuner.Config(2, 2, 0.0)
                 status = "Loading voice…"
                 pool = List(cfg.workers) { Voices.newSynth(voiceId, book.lang, cfg.threads) }
                 val rate = pool[0].rate
                 val free = Channel<Synth>(pool.size); pool.forEach { free.trySend(it) }
-                val dir = audiobookDir(app, book.id).apply { mkdirs() }
-                val cover = Ebooks.coverFile(book.id)?.let { "file://${it.path}" }
-                // resume: keep chapters that are already complete
-                val chapters = org.json.JSONArray()
-                runCatching {
-                    val old = org.json.JSONObject(File(dir, "book.json").readText()).getJSONArray("chapters")
-                    for (i in 0 until old.length()) if (File(old.getJSONObject(i).getString("file")).exists()) chapters.put(old.getJSONObject(i)) else break
-                }
-                val totalChars = book.chapters.sumOf { c -> c.paras.sumOf { it.length } + c.title.length }.coerceAtLeast(1)
-                var done = book.chapters.take(chapters.length()).sumOf { c -> c.paras.sumOf { it.length } + c.title.length }
-                readyId = book.id; ready = chapters.length()
-                for (ci in chapters.length() until book.chapters.size) {
+                val texts = book.chapters.map { Plan.chapterText(it) }
+                val sentences = HashMap<Int, List<Sent>>()
+                val totalChars = parts.sumOf { it.end - it.start }.coerceAtLeast(1)
+                var doneChars = parts.filter { it.id in doneIds }.sumOf { it.end - it.start }
+                var next = fromPart
+
+                while (true) {
                     ensureActive()
-                    val ch = book.chapters[ci]
-                    val text = ch.title + "\n \n" + ch.paras.joinToString("\n") + "\n"
-                    val chStart = System.currentTimeMillis()
-                    val f = File(dir, "%03d.m4a".format(ci + 1)); val w = AacWriter(f.path, rate)
-                    status = "Chapter ${ci + 1} of ${book.chapters.size}"
+                    val hint = if (jump >= 0) jump.also { jump = -1 } else next
+                    val pid = (hint until parts.size).firstOrNull { it !in doneIds } ?: (0 until parts.size).firstOrNull { it !in doneIds } ?: break
+                    val part = parts[pid]
+                    val text = texts[part.chapter]
+                    val sents = sentences.getOrPut(part.chapter) { Sentences.split(text) }.filter { it.start >= part.start && it.end <= part.end }
+                    val t0 = System.currentTimeMillis()
+                    val f = partFile(app, book.id, pid); val w = AacWriter(f.path, rate)
+                    status = "Part ${doneIds.size + 1} of ${parts.size}"
+                    android.util.Log.d("VoxConv", "start part ${pid + 1} (chapter ${part.chapter}) sentences=${sents.size} hint=$hint")
                     val map = ArrayList<LongArray>()
-                    // sentences are synthesised in parallel (one model instance per worker) and written in order
-                    val sents = Sentences.split(text)
                     var k = 0
                     while (k < sents.size) {
                         ensureActive()
@@ -380,19 +303,20 @@ object Converter {
                         batch.forEachIndexed { j, s ->
                             map.add(longArrayOf(w.ms, s.start.toLong(), s.end.toLong()))
                             w.write(pcms[j]); w.write(ShortArray(rate * 15 / 100))
-                            done += s.end - s.start; progress = (done.toFloat() / totalChars).coerceAtMost(1f)
+                            doneChars += s.end - s.start; progress = (doneChars.toFloat() / totalChars).coerceAtMost(1f)
                         }
                     }
                     val secs = w.seconds; w.finish()
-                    android.util.Log.d("VoxConv", "chapter ${ci + 1}: ${secs}s audio in ${(System.currentTimeMillis() - chStart) / 1000}s with ${cfg.workers}x${cfg.threads}")
-                    SyncMap.write(SyncMap.file(app, book.id, ci), map)
-                    chapters.put(org.json.JSONObject().put("title", ch.title).put("file", f.path).put("sec", secs))
-                    writeJson(dir, book, cover, chapters)
-                    ready = chapters.length()
-                    withContext(Dispatchers.Main) { onChapter() }
+                    android.util.Log.d("VoxConv", "part ${pid + 1}/${parts.size}: ${secs}s audio in ${(System.currentTimeMillis() - t0) / 1000}s with ${cfg.workers}x${cfg.threads}")
+                    SyncMap.write(SyncMap.file(app, book.id, pid), map)
+                    done.add(org.json.JSONObject().put("pid", pid).put("ch", part.chapter).put("title", part.title).put("file", f.path).put("sec", secs))
+                    doneIds.add(pid); next = pid + 1
+                    writeJson(dir, book, cover, parts.size, done)
+                    ready = doneIds.size
+                    withContext(Dispatchers.Main) { onPart() }
                 }
                 status = "Done"; progress = 1f
-            } catch (e: CancellationException) { status = "Paused: reopen the book and tap convert to continue"
+            } catch (e: CancellationException) { status = "Paused: tap Listen to continue"
             } catch (e: Throwable) { status = "Conversion failed: ${e.message}"
             } finally { pool.forEach { it.release() }; bookId = null }
         }

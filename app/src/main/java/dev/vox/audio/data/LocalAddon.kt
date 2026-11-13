@@ -14,7 +14,8 @@ class LocalAddon(private val ctx: Context) : Addon {
     private fun read(f: File): Book? = runCatching {
         val o = JSONObject(f.readText()); val ch = o.getJSONArray("chapters")
         Book(o.getString("id"), id, o.getString("title"), o.optString("author"), o.optString("cover").ifBlank { null },
-            chapters = (0 until ch.length()).map { val c = ch.getJSONObject(it); Chapter(c.getString("title"), "file://" + c.getString("file"), c.optInt("sec")) },
+            chapters = (0 until ch.length()).map { val c = ch.getJSONObject(it)
+                Chapter(c.getString("title"), "file://" + c.getString("file"), c.optInt("sec"), c.optInt("pid", it), c.optInt("ch", it)) },
             totalSec = (0 until ch.length()).sumOf { ch.getJSONObject(it).optInt("sec") },
             pending = (o.optInt("total", ch.length()) - ch.length()).coerceAtLeast(0))
     }.getOrNull()

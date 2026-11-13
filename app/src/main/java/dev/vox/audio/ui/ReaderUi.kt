@@ -114,7 +114,7 @@ fun BooksScreen(vm: VM, onRead: (String) -> Unit) {
                                 val eb = runCatching { Ebooks.load(b.id) }.getOrNull() ?: return@launch
                                 val vid = vm.voiceId.ifBlank { Voices.forLang(eb.lang).id }
                                 if (!Voices.installed(vid)) Voices.install(vid)
-                                if (Voices.installed(vid)) Converter.start(ctx, eb, vid) { vm.refreshLocal() }
+                                if (Voices.installed(vid)) Converter.start(ctx, eb, vid, 0) { vm.refreshLocal() }
                             }
                         })
                         DropdownMenuItem({ Text("Remove") }, { Ebooks.remove(b.id); menuFor = null; vm.refreshLocal() })
@@ -142,13 +142,12 @@ fun ReaderScreen(vm: VM, id: String, onClose: () -> Unit) {
     var toc by remember { mutableStateOf(false) }
     var fontMenu by remember { mutableStateOf(false) }
     var voiceMenu by remember { mutableStateOf(false) }
-    var convertAsk by remember { mutableStateOf(false) }
     var paged by remember { mutableStateOf<Paged?>(null) }
     var anchor by remember { mutableStateOf(vm.store.readPos(id) ?: (0 to 0)) }
     val curl = rememberCurlState(0)
     var followTarget by remember { mutableIntStateOf(-1) }
 
-    BackHandler(enabled = !vm.playerOpen) { if (Narrator.state != Narrator.S.Idle && Narrator.bookId == id) Narrator.stop(); onClose() }
+    BackHandler(enabled = !vm.playerOpen) { onClose() }
     LaunchedEffect(id) { runCatching { Ebooks.load(id) }.fold({ book = it }, { error = it.message }) }
     LaunchedEffect(Unit) { delay(2500); chrome = false }
     DisposableEffect(themeIdx) {
@@ -179,14 +178,14 @@ fun ReaderScreen(vm: VM, id: String, onClose: () -> Unit) {
             if (pg == null) { CircularProgressIndicator(Modifier.align(Alignment.Center), color = VoxRed); return@BoxWithConstraints }
 
             val audioKey = "local|$id"
-            val converted = remember(Converter.ready, Converter.bookId, id) { File(ctx.filesDir, "audiobooks/$id/book.json").exists() }
             val audioLoaded = vm.nowBook?.key == audioKey
-            // the sentence being spoken, from the converted audiobook (read along) or from live narration
+            // the sentence being spoken right now (the player is the only audio engine, for converted and live-generated books alike)
             val cursor by remember(pg, id) {
                 derivedStateOf<Pair<Int, IntRange>?> {
-                    if (vm.nowBook?.key == audioKey) {
-                        SyncMap.charAt(ctx, id, vm.chapter, vm.position, pg.plain.getOrNull(vm.chapter)?.length ?: 0, vm.duration)?.let { vm.chapter to it }
-                    } else if (Narrator.bookId == id && Narrator.state != Narrator.S.Idle) Narrator.cursor?.let { Narrator.chapter to it } else null
+                    val nb = vm.nowBook
+                    val part = if (nb?.key == audioKey) nb.chapters.getOrNull(vm.chapter) else null
+                    if (part == null) null
+                    else SyncMap.charAt(ctx, id, part.id, vm.position, pg.plain.getOrNull(part.ch)?.length ?: 0, vm.duration)?.let { part.ch to it }
                 }
             }
             val ebookMeta = Ebooks.list.firstOrNull { it.id == id }
@@ -199,17 +198,13 @@ fun ReaderScreen(vm: VM, id: String, onClose: () -> Unit) {
                     vm.store.setReadPos(id, s.chapter, s.charStart)
                     ebookMeta?.let { vm.touchEbook(it, s.chapter, s.charStart, i.toFloat() / ((pg.pages.size + per - 1) / per).coerceAtLeast(1)) }
                     if (followTarget == i) followTarget = -1
-                    else if (Narrator.bookId == id && Narrator.state != Narrator.S.Idle) startListen(ctx, vm, b, pg, s, scope)
-                    else if (vm.nowBook?.key == audioKey && vm.isPlaying) {
-                        val dur = (vm.nowBook?.chapters?.getOrNull(s.chapter)?.durationSec ?: 0) * 1000L
-                        vm.seekChapterMs(s.chapter, SyncMap.msAt(ctx, id, s.chapter, s.charStart, pg.plain.getOrNull(s.chapter)?.length ?: 0, dur))
-                    }
+                    else if (vm.nowBook?.key == audioKey && vm.isPlaying) vm.listenFrom(b, s.chapter, s.charStart)
                 }
             }
             // follow the voice / audiobook with page turns
             LaunchedEffect(cursor) {
                 val c = cursor ?: return@LaunchedEffect
-                if (!(vm.isPlaying && audioLoaded) && !(Narrator.bookId == id && Narrator.state == Narrator.S.Playing)) return@LaunchedEffect
+                if (!(vm.isPlaying && audioLoaded) || vm.preparing) return@LaunchedEffect
                 val target = pg.pageOf(c.first, c.second.first) / per
                 if (target != curl.settled && !curl.progress.isRunning) { followTarget = target; curl.curlY = 0.84f; curl.goTo(target) }
             }
@@ -241,7 +236,7 @@ fun ReaderScreen(vm: VM, id: String, onClose: () -> Unit) {
             // ---- top chrome
             if (chrome) Row(Modifier.fillMaxWidth().align(Alignment.TopCenter).background(th.paper.copy(alpha = .96f)).statusBarsPadding().padding(horizontal = 4.dp),
                 verticalAlignment = Alignment.CenterVertically) {
-                IconButton({ if (Narrator.bookId == id) Narrator.stop(); onClose() }) { Icon(Icons.Rounded.ArrowBack, "Back", tint = th.ink) }
+                IconButton({ onClose() }) { Icon(Icons.Rounded.ArrowBack, "Back", tint = th.ink) }
                 Text(b.title, color = th.ink, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
                 IconButton({ toc = true }) { Icon(Icons.Rounded.FormatListBulleted, "Contents", tint = th.ink) }
                 Box {
@@ -256,71 +251,43 @@ fun ReaderScreen(vm: VM, id: String, onClose: () -> Unit) {
                         DropdownMenuItem({ Text("Theme: ${listOf("Paper", "Sepia", "Night")[themeIdx]}") }, { themeIdx = (themeIdx + 1) % 3; vm.store.readerTheme = themeIdx })
                     }
                 }
-                IconButton({ convertAsk = true }, enabled = !Converter.running) { Icon(Icons.Rounded.AudioFile, "Convert to audiobook", tint = th.ink) }
             }
 
-            // ---- bottom: voice controls
-            val active = Narrator.bookId == id && Narrator.state != Narrator.S.Idle
+            // ---- bottom: ONE transport for the book (it is the same player as every other audiobook)
             val voiceId = vm.voiceId.ifBlank { Voices.forLang(b.lang).id }
+            val spec0 = pg.pages.getOrNull(curl.settled * per)
             Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
                 (Voices.installing ?: Converter.bookId?.takeIf { it == id })?.let {
                     val p = if (Voices.installing != null) Voices.progress else Converter.progress
                     Surface(color = th.ink.copy(alpha = .92f)) { Column(Modifier.padding(12.dp).fillMaxWidth()) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(if (Voices.installing != null) "Downloading voice… ${(p * 100).toInt()}%" else "Converting · ${Converter.status ?: ""} · ${(p * 100).toInt()}%",
+                            Text(if (Voices.installing != null) "Downloading voice… ${(p * 100).toInt()}%" else "Making audio · ${Converter.status ?: ""} · ${(p * 100).toInt()}%",
                                 color = th.paper, fontSize = 13.sp, modifier = Modifier.weight(1f))
-                            if (Voices.installing == null && Converter.readyId == id && Converter.ready > 0)
-                                TextButton({ if (Narrator.bookId == id) Narrator.stop(); onClose(); vm.playLocal(id) }) { Text("Listen now", color = th.paper, fontWeight = FontWeight.Bold) }
                             if (Voices.installing == null) TextButton({ Converter.cancel() }) { Text("Pause", color = th.paper.copy(alpha = .7f)) }
                         }
                         LinearProgressIndicator({ p }, Modifier.fillMaxWidth().padding(top = 6.dp), color = VoxRed)
                     } }
                 }
                 Voices.error?.let { Surface(color = MaterialTheme.colorScheme.errorContainer) { Text(it, Modifier.padding(12.dp).fillMaxWidth(), fontSize = 13.sp) } }
-                Narrator.message?.let { Surface(color = MaterialTheme.colorScheme.errorContainer) { Text(it, Modifier.padding(12.dp).fillMaxWidth(), fontSize = 13.sp) } }
-                val spec0 = pg.pages.getOrNull(curl.settled * per)
-                if (converted && (chrome || (audioLoaded && vm.isPlaying))) Row(Modifier.fillMaxWidth().background(th.ink.copy(alpha = .94f)).navigationBarsPadding().padding(horizontal = 8.dp, vertical = 4.dp),
+                if (chrome || (audioLoaded && vm.isPlaying) || vm.preparing) Row(Modifier.fillMaxWidth().background(th.ink.copy(alpha = .94f)).navigationBarsPadding().padding(horizontal = 8.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically) {
                     FilledIconButton({
                         if (audioLoaded) vm.togglePlay()
-                        else if (spec0 != null) {
-                            Narrator.stop()
-                            scope.launch { vm.playLocalAt(id, spec0.chapter, SyncMap.msAt(ctx, id, spec0.chapter, spec0.charStart, pg.plain.getOrNull(spec0.chapter)?.length ?: 0, 0)) }
-                        }
+                        else if (spec0 != null) { vm.pauseBook(); vm.listenFrom(b, spec0.chapter, spec0.charStart) }
                     }, colors = IconButtonDefaults.filledIconButtonColors(containerColor = VoxRed)) {
-                        Icon(if (audioLoaded && vm.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, "Listen", tint = Color.White)
+                        if (vm.preparing || Voices.installing != null) CircularProgressIndicator(Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
+                        else Icon(if (audioLoaded && vm.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, "Listen", tint = Color.White)
                     }
                     Spacer(Modifier.width(8.dp))
-                    Text(if (audioLoaded) "Audiobook · read along" else "Listen to the audiobook", color = th.paper, modifier = Modifier.weight(1f), fontSize = 14.sp)
+                    Text(when { vm.preparing -> "Preparing the audio…"; audioLoaded -> "Playing · read along"; else -> "Listen from here" },
+                        color = th.paper, modifier = Modifier.weight(1f), fontSize = 14.sp, maxLines = 1)
                     var sm by remember { mutableStateOf(false) }
                     Box {
                         TextButton({ sm = true }) { Text("${vm.speed}x", color = th.paper) }
                         DropdownMenu(sm, { sm = false }) { listOf(0.75f, 1f, 1.25f, 1.5f, 2f).forEach { sp -> DropdownMenuItem({ Text("${sp}x") }, { vm.changeSpeed(sp); sm = false }) } }
                     }
-                    if (audioLoaded) IconButton({ vm.playerOpen = true }) { Icon(Icons.Rounded.Headphones, "Open player", tint = th.paper) }
-                }
-                else if (!converted && (chrome || active)) Row(Modifier.fillMaxWidth().background(th.ink.copy(alpha = .94f)).navigationBarsPadding().padding(horizontal = 8.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically) {
-                    val spec = pg.pages.getOrNull(curl.settled * per)
-                    FilledIconButton({
-                        if (active) Narrator.toggle()
-                        else if (spec != null) startListen(ctx, vm, b, pg, spec, scope)
-                    }, colors = IconButtonDefaults.filledIconButtonColors(containerColor = VoxRed)) {
-                        if (Narrator.state == Narrator.S.Loading || (Voices.installing != null)) CircularProgressIndicator(Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
-                        else Icon(if (Narrator.state == Narrator.S.Playing && active) Icons.Rounded.Pause else Icons.Rounded.Headphones, "Listen", tint = Color.White)
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    Text(if (active) "Reading aloud" else "Listen to this book", color = th.paper, modifier = Modifier.weight(1f), fontSize = 14.sp)
-                    if (active) IconButton({ Narrator.stop() }) { Icon(Icons.Rounded.Stop, "Stop", tint = th.paper) }
-                    var speedMenu by remember { mutableStateOf(false) }
-                    Box {
-                        TextButton({ speedMenu = true }) { Text("${Narrator.speed}x", color = th.paper) }
-                        DropdownMenu(speedMenu, { speedMenu = false }) {
-                            listOf(0.8f, 1f, 1.15f, 1.3f, 1.5f).forEach { s -> DropdownMenuItem({ Text("${s}x") }, { Narrator.speed = s; speedMenu = false }) }
-                        }
-                    }
-                    Box {
-                        TextButton({ voiceMenu = true }) { Text(Voices.all.firstOrNull { it.id == voiceId }?.label?.substringAfter("· ", "")?.ifBlank { null } ?: "Voice", color = th.paper) }
+                    if (!audioLoaded) Box {
+                        TextButton({ voiceMenu = true }) { Text(Voices.all.firstOrNull { it.id == voiceId }?.label?.substringAfter("· ", "")?.ifBlank { null } ?: "Voice", color = th.paper, maxLines = 1) }
                         DropdownMenu(voiceMenu, { voiceMenu = false }) {
                             Voices.all.forEach { v ->
                                 DropdownMenuItem({ Text(v.label + if (Voices.installed(v.id)) "" else "  ·  ${v.sizeMb} MB") },
@@ -329,6 +296,7 @@ fun ReaderScreen(vm: VM, id: String, onClose: () -> Unit) {
                             }
                         }
                     }
+                    if (audioLoaded) IconButton({ vm.playerOpen = true }) { Icon(Icons.Rounded.Headphones, "Open player", tint = th.paper) }
                 }
             }
 
@@ -338,27 +306,7 @@ fun ReaderScreen(vm: VM, id: String, onClose: () -> Unit) {
                         toc = false; scope.launch { curl.jump(pg.firstPage[ci] / per) }
                     }.padding(vertical = 10.dp))
                 } } })
-            if (convertAsk) AlertDialog({ convertAsk = false },
-                title = { Text("Convert to audiobook?") },
-                text = { Text("Generates the audiobook chapter by chapter with the ${Voices.all.firstOrNull { it.id == voiceId }?.label ?: "selected"} voice, fully on this phone. You can start listening as soon as the first chapter is ready (Home > Made on this phone); the rest keeps converting in the background.") },
-                dismissButton = { TextButton({ convertAsk = false }) { Text("Cancel") } },
-                confirmButton = { TextButton({
-                    convertAsk = false
-                    scope.launch {
-                        if (!Voices.installed(voiceId)) Voices.install(voiceId)
-                        if (Voices.installed(voiceId)) Converter.start(ctx, b, voiceId) { vm.refreshLocal() }
-                    }
-                }) { Text("Convert") } })
         }
-    }
-}
-
-private fun startListen(ctx: android.content.Context, vm: VM, b: EBook, pg: Paged, spec: PageSpec, scope: kotlinx.coroutines.CoroutineScope) {
-    val voice = vm.voiceId.ifBlank { Voices.forLang(b.lang).id }
-    vm.pauseBook()
-    scope.launch {
-        if (!Voices.installed(voice)) Voices.install(voice)
-        if (Voices.installed(voice)) Narrator.start(ctx, b, pg.plain, spec.chapter, spec.charStart, voice)
     }
 }
 

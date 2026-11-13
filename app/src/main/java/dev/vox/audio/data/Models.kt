@@ -1,6 +1,8 @@
 package dev.vox.audio.data
 
-data class Chapter(val title: String, val url: String, val durationSec: Int = 0)
+data class Chapter(val title: String, val url: String, val durationSec: Int = 0,
+                   val id: Int = -1,     // on-device audiobooks: stable part id
+                   val ch: Int = -1)     // on-device audiobooks: chapter of the ebook this part belongs to
 
 data class Book(
     val id: String,          // unique inside its addon

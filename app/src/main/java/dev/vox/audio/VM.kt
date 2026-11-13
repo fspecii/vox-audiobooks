@@ -121,26 +121,57 @@ class VM(app: Application) : AndroidViewModel(app) {
         if (b.addonId != "local") return
         val live = nowBook?.key == b.key
         val p = store.progress(b.key)
-        val ch = if (live) chapter else p?.chapter ?: 0
+        val chap = if (live) b.chapters.getOrNull(chapter) ?: nowBook?.chapters?.getOrNull(chapter) else b.chapters.firstOrNull { it.id == (p?.chapter ?: 0) }
+        val pid = chap?.id ?: (p?.chapter ?: 0)
+        val ebCh = chap?.ch?.takeIf { it >= 0 } ?: pid
         val ms = if (live) position else p?.positionMs ?: 0L
-        val off = dev.vox.audio.reader.SyncMap.charAt(getApplication(), b.id, ch, ms)?.first ?: 0
-        store.setReadPos(b.id, ch, off)
-        readerJump = ch to off
+        val off = dev.vox.audio.reader.SyncMap.charAt(getApplication(), b.id, pid, ms)?.first ?: 0
+        store.setReadPos(b.id, ebCh, off)
+        readerJump = ebCh to off
         playerOpen = false
         reading = b.id
     }
 
+    // part ids <-> playlist positions (a growing on-device audiobook has gaps until every part is generated)
+    private fun storedOf(b: Book, idx: Int) = if (b.addonId == "local") b.chapters.getOrNull(idx)?.id ?: idx else idx
+    private fun idxOf(b: Book, stored: Int): Int {
+        val last = (b.chapters.size - 1).coerceAtLeast(0)
+        if (b.addonId != "local") return stored.coerceIn(0, last)
+        return b.chapters.indexOfFirst { it.id == stored }.takeIf { it >= 0 } ?: b.chapters.indexOfFirst { it.id > stored }.takeIf { it >= 0 } ?: last
+    }
+
     fun seekChapterMs(ci: Int, ms: Long) { controller?.let { if (ci in 0 until it.mediaItemCount) it.seekTo(ci, ms) } }
 
-    /** Play the converted audiobook of [id] from a given chapter/time (used by the reader's Listen button). */
-    fun playLocalAt(id: String, ci: Int, ms: Long) = viewModelScope.launch {
-        val m = runCatching { addons.first { it.id == "local" }.meta(Book(id, "local", "")) }.getOrNull() ?: return@launch
-        if (m.chapters.isEmpty()) return@launch
-        val c = ci.coerceIn(0, m.chapters.lastIndex)
-        val t = if (c == ci) ms else 0L
-        if (nowBook?.key == m.key && controller?.mediaItemCount ?: 0 > 0 && !isStale(m)) {
-            controller?.seekTo(c, t); if (controller?.isPlaying != true) togglePlay()
-        } else play(m, c, t)
+    var preparing by mutableStateOf(false)
+
+    /**
+     * The one "Listen" action for ebooks: make sure the part holding this spot exists (generating from here first, then the rest of the
+     * book), then play it in the same player as every other audiobook. If it is already playing, just move to the sentence.
+     */
+    fun listenFrom(b: dev.vox.audio.reader.EBook, chapter: Int, offset: Int) = viewModelScope.launch {
+        val app = getApplication<Application>()
+        val R = dev.vox.audio.reader.Voices
+        val voice = voiceId.ifBlank { R.forLang(b.lang).id }
+        if (!R.installed(voice)) R.install(voice)
+        if (!R.installed(voice)) return@launch
+        val part = dev.vox.audio.reader.Plan.partFor(dev.vox.audio.reader.Plan.parts(b), chapter, offset) ?: return@launch
+        preparing = true
+        try {
+            dev.vox.audio.reader.Converter.start(app, b, voice, part.id) { refreshLocal() }
+            var waited = 0
+            while (!dev.vox.audio.reader.Converter.isReady(app, b.id, part.id)) {
+                delay(250)
+                if (dev.vox.audio.reader.Converter.status?.startsWith("Conversion failed") == true || ++waited > 2400) return@launch
+            }
+            val m = runCatching { addons.first { it.id == "local" }.meta(Book(b.id, "local", "")) }.getOrNull() ?: return@launch
+            val ms = dev.vox.audio.reader.SyncMap.msAt(app, b.id, part.id, offset)
+            val c = controller
+            if (c != null && nowBook?.key == m.key && c.mediaItemCount > 0) {
+                syncPlaylist(c, m)
+                val idx = (0 until c.mediaItemCount).firstOrNull { c.getMediaItemAt(it).mediaId.substringAfter('#').toIntOrNull() == part.id } ?: 0
+                c.seekTo(idx, ms); if (!c.isPlaying) togglePlay()
+            } else play(m, idxOf(m, part.id), ms)
+        } finally { preparing = false }
     }
 
     /** Reading progress of an ebook shows up in Continue Listening next to audiobooks. */
@@ -312,15 +343,15 @@ class VM(app: Application) : AndroidViewModel(app) {
         nowBook = Book(key.substringAfter('|'), key.substringBefore('|'),
             items.first().mediaMetadata.albumTitle?.toString().orEmpty(), items.first().mediaMetadata.artist?.toString().orEmpty(),
             items.first().mediaMetadata.artworkUri?.toString(),
-            chapters = items.map { Chapter(it.mediaMetadata.title?.toString().orEmpty(), it.localConfiguration?.uri?.toString().orEmpty()) })
+            chapters = items.map { Chapter(it.mediaMetadata.title?.toString().orEmpty(), it.localConfiguration?.uri?.toString().orEmpty(), 0, it.mediaId.substringAfter('#').toIntOrNull() ?: -1) })
     }
 
     /** Reopen the last book paused at the exact saved spot, so the mini player is there on launch. */
     private fun restoreLast(c: MediaController) {
         val b = store.lastBook() ?: return
-        if (b.chapters.isEmpty()) return
+        if (b.chapters.isEmpty() || isStale(b)) return
         val p = store.progress(b.key)
-        val idx = (p?.chapter ?: 0).coerceIn(0, b.chapters.lastIndex)
+        val idx = idxOf(b, p?.chapter ?: 0)
         val pos = ((p?.positionMs ?: 0) - 5000).coerceAtLeast(0)
         nowBook = b; chapter = idx; position = pos
         duration = b.chapters[idx].durationSec * 1000L
@@ -330,7 +361,7 @@ class VM(app: Application) : AndroidViewModel(app) {
     }
 
     private fun mediaItems(book: Book) = book.chapters.mapIndexed { i, ch ->
-        MediaItem.Builder().setUri(ch.url).setMediaId("${book.key}#$i")
+        MediaItem.Builder().setUri(ch.url).setMediaId("${book.key}#${if (book.addonId == "local" && ch.id >= 0) ch.id else i}")
             .setMediaMetadata(MediaMetadata.Builder().setTitle(ch.title).setArtist(book.author).setAlbumTitle(book.title)
                 .setArtworkUri(book.cover?.let { Uri.parse(it) }).build()).build()
     }
@@ -353,20 +384,24 @@ class VM(app: Application) : AndroidViewModel(app) {
     }
 
     /** Continue from the saved chapter + position (5 s of rewind). Loads the chapter list first if the card came from history. */
-    /** An on-device audiobook that is still being generated gains chapters: append them to the running playlist. */
+    /** An on-device audiobook that is still being generated gains parts: insert them into the running playlist, in book order. */
     private var extending = false
+    private fun syncPlaylist(c: MediaController, m: Book) {
+        val ids = (0 until c.mediaItemCount).map { c.getMediaItemAt(it).mediaId.substringAfter('#').toIntOrNull() ?: -1 }.toMutableList()
+        val items = mediaItems(m)
+        m.chapters.forEachIndexed { i, ch ->
+            if (ch.id !in ids) { val at = i.coerceAtMost(ids.size); c.addMediaItem(at, items[i]); ids.add(at, ch.id) }
+        }
+        nowBook = m.copy(cover = nowBook?.cover ?: m.cover); store.setLastBook(nowBook)
+        if (detail?.key == m.key) detail = nowBook
+    }
+
     private fun extendLocal(c: MediaController) {
         val b = nowBook ?: return
         if (extending || b.addonId != "local" || dev.vox.audio.reader.Converter.readyId != b.id || dev.vox.audio.reader.Converter.ready <= c.mediaItemCount) return
         extending = true
         viewModelScope.launch {
-            runCatching { addons.first { it.id == "local" }.meta(b) }.onSuccess { m ->
-                if (m.chapters.size > c.mediaItemCount) {
-                    c.addMediaItems(mediaItems(m).drop(c.mediaItemCount))
-                    nowBook = m.copy(cover = b.cover ?: m.cover); store.setLastBook(nowBook)
-                    if (detail?.key == b.key) detail = nowBook
-                }
-            }
+            runCatching { addons.first { it.id == "local" }.meta(b) }.onSuccess { m -> if (m.chapters.size > c.mediaItemCount) syncPlaylist(c, m) }
             extending = false
         }
     }
@@ -386,7 +421,11 @@ class VM(app: Application) : AndroidViewModel(app) {
         detail = m; resume(m)
     }
 
-    private fun isStale(b: Book) = b.chapters.firstOrNull()?.url?.let { !Torrents.knows(it) } == true
+    private fun isStale(b: Book): Boolean {
+        val u = b.chapters.firstOrNull()?.url ?: return false
+        if (u.startsWith("file://")) return b.chapters.any { !java.io.File(u.removePrefix("file://").substringBeforeLast('/') + "/" + it.url.substringAfterLast('/')).exists() }
+        return !Torrents.knows(u)
+    }
 
     fun resume(book: Book) {
         if (book.addonId == "ebook") { reading = book.id; return }
@@ -394,13 +433,13 @@ class VM(app: Application) : AndroidViewModel(app) {
         if (cur != null && !isStale(cur)) { togglePlay(); return }
         val p = store.progress(book.key)
         val fresh = p == null || book.key in finished
-        val ch = if (fresh) 0 else p!!.chapter
+        val stored = if (fresh) 0 else p!!.chapter
         val pos = if (fresh) 0L else (p!!.positionMs - 5000).coerceAtLeast(0)
-        if (book.chapters.isNotEmpty() && !isStale(book)) { play(book, ch, pos); return }
-        store.lastBook()?.takeIf { it.key == book.key && it.chapters.isNotEmpty() && !isStale(it) }?.let { play(it, ch, pos); return }
+        if (book.chapters.isNotEmpty() && !isStale(book)) { play(book, idxOf(book, stored), pos); return }
+        store.lastBook()?.takeIf { it.key == book.key && it.chapters.isNotEmpty() && !isStale(it) }?.let { play(it, idxOf(it, stored), pos); return }
         viewModelScope.launch {    // torrent URLs from an earlier launch: re-resolve through the addon
             val a = addonFor(book) ?: return@launch
-            runCatching { a.meta(book) }.onSuccess { m -> play(m.copy(cover = m.cover ?: book.cover, author = m.author.ifBlank { book.author }), ch, pos) }
+            runCatching { a.meta(book) }.onSuccess { m -> play(m.copy(cover = m.cover ?: book.cover, author = m.author.ifBlank { book.author }), idxOf(m, stored), pos) }
         }
     }
 
@@ -435,12 +474,12 @@ class VM(app: Application) : AndroidViewModel(app) {
     fun addBookmark() {
         val b = nowBook ?: return; val c = controller ?: return
         val note = "${b.chapters.getOrNull(c.currentMediaItemIndex)?.title.orEmpty()} · ${dev.vox.audio.ui.fmtTime(c.currentPosition)}"
-        bookmarks = (bookmarks + Bookmark(b.key, c.currentMediaItemIndex, c.currentPosition, note, System.currentTimeMillis()))
+        bookmarks = (bookmarks + Bookmark(b.key, storedOf(b, c.currentMediaItemIndex), c.currentPosition, note, System.currentTimeMillis()))
             .sortedWith(compareBy({ it.chapter }, { it.positionMs }))
         store.setBookmarks(b.key, bookmarks)
     }
     fun removeBookmark(m: Bookmark) { bookmarks = bookmarks - m; store.setBookmarks(m.bookKey, bookmarks) }
-    fun jumpTo(m: Bookmark) { controller?.let { it.seekTo(m.chapter, m.positionMs); if (!it.isPlaying) togglePlay() } }
+    fun jumpTo(m: Bookmark) { val b = nowBook ?: return; controller?.let { it.seekTo(idxOf(b, m.chapter), m.positionMs); if (!it.isPlaying) togglePlay() } }
 
     // ---------- self-update (GitHub releases) ----------
     fun checkUpdate(auto: Boolean = false) = viewModelScope.launch {
@@ -494,8 +533,10 @@ class VM(app: Application) : AndroidViewModel(app) {
         if (c.playbackState == Player.STATE_IDLE || c.playbackState == Player.STATE_ENDED) return
         val n = c.mediaItemCount.coerceAtLeast(1)
         val within = if (c.duration > 0) c.currentPosition.toFloat() / c.duration else 0f
-        store.saveProgress(Progress(b.key, c.currentMediaItemIndex, c.currentPosition, System.currentTimeMillis(),
-            ((c.currentMediaItemIndex + within) / n).coerceIn(0f, 1f)))
+        val stored = storedOf(b, c.currentMediaItemIndex)
+        val totalParts = if (b.addonId == "local") (b.chapters.size + b.pending).coerceAtLeast(1) else n
+        store.saveProgress(Progress(b.key, stored, c.currentPosition, System.currentTimeMillis(),
+            ((stored + within) / totalParts).coerceIn(0f, 1f)))
     }
 
     override fun onCleared() { saveProgress(); controller?.release(); super.onCleared() }
