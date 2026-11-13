@@ -184,6 +184,7 @@ class AacWriter(path: String, private val rate: Int) {
     }
 
     private fun drain(end: Boolean = false) {
+        val deadline = System.currentTimeMillis() + 8_000
         while (true) {
             val i = codec.dequeueOutputBuffer(info, if (end) 10_000 else 0)
             when {
@@ -194,14 +195,18 @@ class AacWriter(path: String, private val rate: Int) {
                     codec.releaseOutputBuffer(i, false)
                     if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) return
                 }
-                else -> if (!end) return
+                else -> { if (!end || System.currentTimeMillis() > deadline) return }
             }
         }
     }
 
     fun finish() {
-        var i = codec.dequeueInputBuffer(1_000_000)
-        if (i >= 0) codec.queueInputBuffer(i, 0, 0, samples * 1_000_000L / rate, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+        // the end-of-stream marker must get in even when every input buffer is busy: drain and retry
+        var queued = false; var tries = 0
+        while (!queued && tries++ < 200) {
+            val i = codec.dequeueInputBuffer(20_000)
+            if (i >= 0) { codec.queueInputBuffer(i, 0, 0, samples * 1_000_000L / rate, MediaCodec.BUFFER_FLAG_END_OF_STREAM); queued = true } else drain()
+        }
         drain(true)
         runCatching { codec.stop() }; codec.release()
         runCatching { muxer.stop() }; muxer.release()
@@ -222,7 +227,24 @@ object Converter {
     var status by mutableStateOf<String?>(null)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var job: Job? = null
-    @Volatile private var jump = -1                                // where the user wants audio NOW (overrides the sequential order once)
+    var planned by mutableStateOf<List<Part>>(emptyList()); private set        // parts of the book shown in progress views
+    var plannedBook by mutableStateOf<String?>(null); private set
+    val doneParts = mutableStateListOf<Int>()
+    var activePart by mutableIntStateOf(-1); private set
+    @Volatile private var jump = -1
+
+    /** Load the part plan + which parts exist for [id] (for progress displays; does not generate anything). */
+    suspend fun prepareView(ctx: Context, id: String) {
+        if (plannedBook == id && planned.isNotEmpty() && running) return
+        val eb = runCatching { Ebooks.load(id) }.getOrNull() ?: return
+        val parts = Plan.parts(eb)
+        val done = runCatching {
+            val a = org.json.JSONObject(File(audiobookDir(ctx, id), "book.json").readText()).getJSONArray("chapters")
+            (0 until a.length()).map { a.getJSONObject(it).getInt("pid") }
+        }.getOrDefault(emptyList())
+        withContext(Dispatchers.Main) { planned = parts; plannedBook = id; doneParts.clear(); doneParts.addAll(done) }
+    }
+                                // where the user wants audio NOW (overrides the sequential order once)
     val running get() = job?.isActive == true
 
     fun audiobookDir(ctx: Context, id: String) = File(ctx.filesDir, "audiobooks/$id")
@@ -232,7 +254,7 @@ object Converter {
 
     private fun writeJson(dir: File, book: EBook, cover: String?, total: Int, parts: List<org.json.JSONObject>) {
         val tmp = File(dir, "book.json.tmp")
-        tmp.writeText(org.json.JSONObject().put("v", 2).put("id", book.id).put("title", book.title).put("author", book.author)
+        tmp.writeText(org.json.JSONObject().put("v", 3).put("id", book.id).put("title", book.title).put("author", book.author)
             .put("cover", cover ?: "").put("total", total).put("chapters", org.json.JSONArray(parts.sortedBy { it.getInt("pid") })).toString())
         tmp.renameTo(File(dir, "book.json"))
     }
@@ -245,7 +267,7 @@ object Converter {
         // nothing left to generate? (every part already exists)
         runCatching {
             val o = org.json.JSONObject(File(audiobookDir(app, book.id), "book.json").readText())
-            if (o.optInt("v") == 2 && o.getJSONArray("chapters").length() >= o.getInt("total") && o.getInt("total") == Plan.parts(book).size) return
+            if (o.optInt("v") == 3 && o.getJSONArray("chapters").length() >= o.getInt("total") && o.getInt("total") == Plan.parts(book).size) return
         }
         bookId = book.id; progress = 0f; status = "Preparing voice…"; jump = -1
         NarrationService.start(app)
@@ -254,9 +276,10 @@ object Converter {
             try {
                 val parts = Plan.parts(book)
                 total = parts.size
+                withContext(Dispatchers.Main) { planned = parts; plannedBook = book.id }
                 val dir = audiobookDir(app, book.id)
                 // an older (whole-chapter) conversion has a different layout: start clean
-                runCatching { if (File(dir, "book.json").exists() && org.json.JSONObject(File(dir, "book.json").readText()).optInt("v") != 2) dir.deleteRecursively() }
+                runCatching { if (File(dir, "book.json").exists() && org.json.JSONObject(File(dir, "book.json").readText()).optInt("v") != 3) dir.deleteRecursively() }
                 dir.mkdirs()
                 val cover = Ebooks.coverFile(book.id)?.let { "file://${it.path}" }
                 val done = ArrayList<org.json.JSONObject>()
@@ -265,6 +288,7 @@ object Converter {
                     for (i in 0 until old.length()) if (File(old.getJSONObject(i).getString("file")).exists()) done.add(old.getJSONObject(i))
                 }
                 val doneIds = done.map { it.getInt("pid") }.toMutableSet()
+                withContext(Dispatchers.Main) { doneParts.clear(); doneParts.addAll(doneIds) }
                 readyId = book.id; ready = doneIds.size
 
                 val cfg = Tuner.best(Voices.byId(voiceId)?.kind ?: "piper") ?: Tuner.Config(2, 2, 0.0)
@@ -273,7 +297,6 @@ object Converter {
                 val rate = pool[0].rate
                 val free = Channel<Synth>(pool.size); pool.forEach { free.trySend(it) }
                 val texts = book.chapters.map { Plan.chapterText(it) }
-                val sentences = HashMap<Int, List<Sent>>()
                 val totalChars = parts.sumOf { it.end - it.start }.coerceAtLeast(1)
                 var doneChars = parts.filter { it.id in doneIds }.sumOf { it.end - it.start }
                 var next = fromPart
@@ -284,10 +307,11 @@ object Converter {
                     val pid = (hint until parts.size).firstOrNull { it !in doneIds } ?: (0 until parts.size).firstOrNull { it !in doneIds } ?: break
                     val part = parts[pid]
                     val text = texts[part.chapter]
-                    val sents = sentences.getOrPut(part.chapter) { Sentences.split(text) }.filter { it.start >= part.start && it.end <= part.end }
+                    val sents = Plan.sentences(book, part.chapter).filter { it.start >= part.start && it.end <= part.end }
                     val t0 = System.currentTimeMillis()
                     val f = partFile(app, book.id, pid); val w = AacWriter(f.path, rate)
                     status = "Part ${doneIds.size + 1} of ${parts.size}"
+                    activePart = pid
                     android.util.Log.d("VoxConv", "start part ${pid + 1} (chapter ${part.chapter}) sentences=${sents.size} hint=$hint")
                     val map = ArrayList<LongArray>()
                     var k = 0
@@ -297,12 +321,16 @@ object Converter {
                         val pcms = coroutineScope {
                             batch.map { s -> async(Dispatchers.Default) {
                                 val sy = free.receive()
-                                try { sy.speak(text.substring(s.start, s.end).replace('\n', ' '), 1f).toPcm() } finally { free.send(sy) }
+                                try { sy.speak(Plan.speakText(text.substring(s.start, s.end)), 1f).toPcm() } finally { free.send(sy) }
                             } }.awaitAll()
                         }
                         batch.forEachIndexed { j, s ->
                             map.add(longArrayOf(w.ms, s.start.toLong(), s.end.toLong()))
-                            w.write(pcms[j]); w.write(ShortArray(rate * 15 / 100))
+                            w.write(pcms[j])
+                            // rests: a paragraph or a heading gets a real pause, a sentence a short breath
+                            val heading = s.start == sents.first().start && part.start == 0 && j == 0 && k == batch.size
+                            val rest = if (Plan.paragraphEnd(text, s)) 520 else 160
+                            w.write(ShortArray(rate * rest / 1000))
                             doneChars += s.end - s.start; progress = (doneChars.toFloat() / totalChars).coerceAtMost(1f)
                         }
                     }
@@ -313,12 +341,12 @@ object Converter {
                     doneIds.add(pid); next = pid + 1
                     writeJson(dir, book, cover, parts.size, done)
                     ready = doneIds.size
-                    withContext(Dispatchers.Main) { onPart() }
+                    withContext(Dispatchers.Main) { doneParts.add(pid); onPart() }
                 }
                 status = "Done"; progress = 1f
             } catch (e: CancellationException) { status = "Paused: tap Listen to continue"
             } catch (e: Throwable) { status = "Conversion failed: ${e.message}"
-            } finally { pool.forEach { it.release() }; bookId = null }
+            } finally { pool.forEach { it.release() }; bookId = null; activePart = -1 }
         }
     }
 

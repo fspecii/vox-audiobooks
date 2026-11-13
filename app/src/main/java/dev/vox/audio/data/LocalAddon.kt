@@ -12,7 +12,7 @@ class LocalAddon(private val ctx: Context) : Addon {
     private val root get() = File(ctx.filesDir, "audiobooks")
 
     private fun read(f: File): Book? = runCatching {
-        val o = JSONObject(f.readText()); val ch = o.getJSONArray("chapters")
+        val o = JSONObject(f.readText()); if (o.optInt("v") < 3) return@runCatching null; val ch = o.getJSONArray("chapters")
         Book(o.getString("id"), id, o.getString("title"), o.optString("author"), o.optString("cover").ifBlank { null },
             chapters = (0 until ch.length()).map { val c = ch.getJSONObject(it)
                 Chapter(c.getString("title"), "file://" + c.getString("file"), c.optInt("sec"), c.optInt("pid", it), c.optInt("ch", it)) },

@@ -84,19 +84,20 @@ class VM(app: Application) : AndroidViewModel(app) {
             refreshRows()
         }
         viewModelScope.launch {
-            var tick = 0
+            var tick = 0; var loop = 0
             while (true) {
                 delay(500)
+                loop++
                 val c = controller ?: continue
                 position = c.currentPosition
                 chapter = c.currentMediaItemIndex
                 duration = c.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: ((nowBook?.chapters?.getOrNull(chapter)?.durationSec ?: 0) * 1000L)
                 if (c.isPlaying && ++tick % 10 == 0) saveProgress()
-                if (tick % 4 == 0) torrentStatus = Torrents.statusFor(c.currentMediaItem?.localConfiguration?.uri?.toString())
+                if (loop % 4 == 0) torrentStatus = Torrents.statusFor(c.currentMediaItem?.localConfiguration?.uri?.toString())
                 if (sleepEndsAt > 0 && System.currentTimeMillis() >= sleepEndsAt) { c.pause(); sleepEndsAt = 0 }
                 if (sleepAtChapterEnd && sleepStartChapter >= 0 && chapter != sleepStartChapter) { c.pause(); sleepAtChapterEnd = false }
                 if (updateReady != null && !c.isPlaying && store.autoUpdate) installUpdate()
-                if (tick % 6 == 0) extendLocal(c)
+                if (loop % 2 == 0) extendLocal(c)          // runs while paused/ended too: new parts appear the moment they exist
             }
         }
     }
@@ -146,7 +147,13 @@ class VM(app: Application) : AndroidViewModel(app) {
 
     /** Opening an ebook: if it already has audio it goes straight to the main player; otherwise ask what to do. */
     var askBook by mutableStateOf<String?>(null)
-    fun hasAudio(id: String) = java.io.File(getApplication<Application>().filesDir, "audiobooks/$id/book.json").exists()
+    private fun hasAudioComplete(id: String): Boolean = runCatching {
+        val o = org.json.JSONObject(java.io.File(getApplication<Application>().filesDir, "audiobooks/$id/book.json").readText())
+        o.getJSONArray("chapters").length() >= o.optInt("total", 0)
+    }.getOrDefault(true)
+    fun hasAudio(id: String) = runCatching {
+        org.json.JSONObject(java.io.File(getApplication<Application>().filesDir, "audiobooks/$id/book.json").readText()).optInt("v") >= 3
+    }.getOrDefault(false)
 
     fun openEbook(id: String) {
         if (hasAudio(id)) { playLocal(id); playerOpen = true } else askBook = id
@@ -349,7 +356,7 @@ class VM(app: Application) : AndroidViewModel(app) {
                 }
                 override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) { chapter = c.currentMediaItemIndex; saveProgress() }
                 override fun onPlaybackStateChanged(state: Int) {
-                    if (state == Player.STATE_ENDED) nowBook?.takeIf { dev.vox.audio.reader.Converter.bookId != it.id }?.let {
+                    if (state == Player.STATE_ENDED) nowBook?.takeIf { dev.vox.audio.reader.Converter.bookId != it.id && it.pending == 0 }?.let {
                         finished = finished + it.key; store.setFinished(finished)
                         store.saveProgress(Progress(it.key, 0, 0, System.currentTimeMillis(), 1f))
                     }
@@ -426,14 +433,45 @@ class VM(app: Application) : AndroidViewModel(app) {
         if (detail?.key == m.key) detail = nowBook
     }
 
+    private var jsonStamp = 0L
     private fun extendLocal(c: MediaController) {
         val b = nowBook ?: return
-        if (extending || b.addonId != "local" || dev.vox.audio.reader.Converter.readyId != b.id || dev.vox.audio.reader.Converter.ready <= c.mediaItemCount) return
+        if (extending || b.addonId != "local") return
+        val f = java.io.File(getApplication<Application>().filesDir, "audiobooks/${b.id}/book.json")
+        val stamp = f.lastModified()
+        if (stamp == jsonStamp) return                  // nothing new on disk
         extending = true
         viewModelScope.launch {
-            runCatching { addons.first { it.id == "local" }.meta(b) }.onSuccess { m -> if (m.chapters.size > c.mediaItemCount) syncPlaylist(c, m) }
+            runCatching { addons.first { it.id == "local" }.meta(b) }.onSuccess { m ->
+                jsonStamp = stamp
+                if (m.chapters.size > c.mediaItemCount) {
+                    val wasEnded = c.playbackState == Player.STATE_ENDED
+                    android.util.Log.d("VoxPlay", "extend: ${c.mediaItemCount} -> ${m.chapters.size} wasEnded=$wasEnded pwr=${c.playWhenReady}")
+                    syncPlaylist(c, m)
+                    if (wasEnded && c.playWhenReady) { c.seekToNextMediaItem(); c.prepare() }   // reached the end of what existed: carry on
+                } else if (m.pending != b.pending) nowBook = b.copy(pending = m.pending)
+            }
             extending = false
         }
+    }
+
+    fun partIndex(partId: Int): Int = nowBook?.chapters?.indexOfFirst { it.id == partId }?.takeIf { it >= 0 } ?: 0
+
+    /** Tapped a part that does not exist yet: make it the next thing to generate (starts the conversion if it is not running). */
+    fun generateNext(id: String, partId: Int) {
+        if (dev.vox.audio.reader.Converter.running && dev.vox.audio.reader.Converter.bookId == id) {
+            viewModelScope.launch { runCatching { dev.vox.audio.reader.Ebooks.load(id) }.getOrNull()?.let { dev.vox.audio.reader.Converter.start(getApplication(), it, voiceId.ifBlank { dev.vox.audio.reader.Voices.forLang(it.lang).id }, partId) {} } }
+        } else continueConversion(id, partId)
+    }
+
+    /** An unfinished on-device audiobook keeps generating whenever you come back to it. */
+    fun continueConversion(id: String, fromPart: Int = 0) = viewModelScope.launch {
+        if (dev.vox.audio.reader.Converter.running) return@launch
+        val eb = runCatching { dev.vox.audio.reader.Ebooks.load(id) }.getOrNull() ?: return@launch
+        val R = dev.vox.audio.reader.Voices
+        val voice = voiceId.ifBlank { R.forLang(eb.lang).id }
+        if (!R.installed(voice)) R.install(voice)
+        if (R.installed(voice)) dev.vox.audio.reader.Converter.start(getApplication(), eb, voice, fromPart) { refreshLocal() }
     }
 
     /** Seconds of audio left in the whole book (null when some chapter lengths are unknown). */
@@ -460,6 +498,7 @@ class VM(app: Application) : AndroidViewModel(app) {
 
     fun resume(book: Book) {
         if (book.addonId == "ebook") { reading = book.id; return }
+        if (book.addonId == "local" && (book.pending > 0 || !hasAudioComplete(book.id))) continueConversion(book.id)
         val cur = nowBook?.takeIf { it.key == book.key }
         if (cur != null && !isStale(cur)) { togglePlay(); return }
         val p = store.progress(book.key)

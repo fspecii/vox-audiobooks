@@ -47,6 +47,20 @@ class CoreTest {
         assertEquals(parts, Plan.parts(book))   // deterministic
     }
 
+    @Test fun frontMatterIsNotRead() {
+        val paras = listOf("Title: Dracula", "Author: Bram Stoker", "Release date: October 1, 1995", "www.gutenberg.org/ebooks/345", "Contents", "A real sentence of the story begins here.")
+        val book = EBook("t-front", "T", "A", "en", listOf(EChapter("The Project Gutenberg eBook of Dracula", paras), EChapter("Chapter 1", listOf("It was dark. The wind howled."))))
+        val spoken = Plan.sentences(book, 0).map { Plan.chapterText(book.chapters[0]).substring(it.start, it.end) }
+        assertTrue(spoken.any { it.startsWith("A real sentence") })
+        assertTrue(spoken.none { it.startsWith("Title:") || it.startsWith("Author:") || it.contains("gutenberg.org") || it.equals("Contents", true) })
+    }
+
+    @Test fun speakTextCleansMarkup() {
+        assertEquals("Hello world.", Plan.speakText("Hello _world_"))
+        assertEquals("He left, and never came back.", Plan.speakText("He left\u2014and never came back."))
+        assertEquals("See this.", Plan.speakText("See this [Illustration: a cat] [12]"))
+    }
+
     @Test fun partForFindsTheRightPart() {
         val paras = (1..300).map { "Sentence one of paragraph $it. Sentence two. Sentence three." }
         val book = EBook("t-plan2", "T", "A", "en", listOf(EChapter("One", paras)))

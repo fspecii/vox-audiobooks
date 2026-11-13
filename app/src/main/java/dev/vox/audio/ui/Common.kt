@@ -8,6 +8,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Headphones
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -54,8 +56,9 @@ fun BookCard(b: Book, modifier: Modifier = Modifier, progress: Float? = null, sh
         }
         if (showText) {
             Spacer(Modifier.height(6.dp))
-            Text(b.title, style = MaterialTheme.typography.labelLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            if (b.author.isNotBlank()) Text(b.author, style = MaterialTheme.typography.bodySmall,
+            // fixed text block (2 title lines + 1 author line) so every tile in every row has the same height
+            Text(displayTitle(b.title), style = MaterialTheme.typography.labelLarge, minLines = 2, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(b.author.ifBlank { " " }, style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
@@ -72,4 +75,27 @@ fun fmtTime(ms: Long): String {
 /** "2h 05m" / "45m" for a number of seconds. */
 fun fmtDur(sec: Long): String {
     val m = (sec / 60).coerceAtLeast(0); return if (m >= 60) "${m / 60}h ${"%02d".format(m % 60)}m" else "${m}m"
+}
+
+/** Segmented progress of an on-device audiobook: one block per part, grouped by chapter. Red = ready, pulsing = generating now. */
+@Composable
+fun PartsBar(chapterParts: List<dev.vox.audio.reader.Part>, done: Set<Int>, active: Int, modifier: Modifier = Modifier, height: Dp = 6.dp) {
+    val pulse = androidx.compose.animation.core.rememberInfiniteTransition(label = "gen")
+    val a by pulse.animateFloat(.35f, 1f, androidx.compose.animation.core.infiniteRepeatable(androidx.compose.animation.core.tween(700), androidx.compose.animation.core.RepeatMode.Reverse), label = "a")
+    Row(modifier.fillMaxWidth().height(height), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+        chapterParts.forEach { p ->
+            val c = when {
+                p.id in done -> VoxRed
+                p.id == active -> VoxRed.copy(alpha = a)
+                else -> MaterialTheme.colorScheme.onSurface.copy(alpha = .16f)
+            }
+            Box(Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(3.dp)).background(c))
+        }
+    }
+}
+
+/** Subtitles and long catalogue titles are cut: "Moby Dick / or, The Whale" -> "Moby Dick", at most 44 characters. */
+fun displayTitle(t: String): String {
+    val c = t.substringBefore(" / ").substringBefore(" : ").substringBefore(" — ").substringBefore(" (").trim().ifBlank { t }
+    return if (c.length > 44) c.take(42).trimEnd(' ', ',', ':', ';') + "…" else c
 }

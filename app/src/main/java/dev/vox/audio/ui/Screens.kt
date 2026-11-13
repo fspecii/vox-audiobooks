@@ -43,7 +43,7 @@ fun HomeScreen(vm: VM, onOpen: (Book) -> Unit) {
                 items(vm.continueList, key = { "h" + it.key }) { b ->
                     Column(Modifier.width(cardW)) {
                         BookCard(b, Modifier.fillMaxWidth(), progress = vm.fractionOf(b)) { vm.resume(b) }
-                        vm.resumeLabel(b)?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = VoxRed, modifier = Modifier.padding(top = 2.dp)) }
+                        Text(vm.resumeLabel(b) ?: " ", style = MaterialTheme.typography.labelSmall, color = VoxRed, maxLines = 1, modifier = Modifier.padding(top = 2.dp))
                     }
                 }
             }
@@ -66,7 +66,7 @@ private fun Hero(vm: VM, b: Book?, height: androidx.compose.ui.unit.Dp, onOpen: 
             Text("VOX", color = VoxRed, fontSize = 28.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp)
         }
         if (b != null) Column(Modifier.align(Alignment.BottomStart).padding(16.dp, 0.dp, 16.dp, 20.dp)) {
-            Text(b.title, fontSize = 28.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(displayTitle(b.title), fontSize = 28.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
             if (b.author.isNotBlank()) Text(b.author, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(12.dp))
             FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -365,8 +365,9 @@ fun DetailScreen(vm: VM, b: Book, onBack: (() -> Unit)?) {
             if (b.description.isNotBlank()) Text(b.description, style = MaterialTheme.typography.bodyMedium, maxLines = 6,
                 overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(16.dp))
             if (b.pending > 0) Text(if (dev.vox.audio.reader.Converter.bookId == b.id) "Generating audio: ${dev.vox.audio.reader.Converter.ready} of ${dev.vox.audio.reader.Converter.total} chapters ready. You can listen now, the rest is added as it finishes."
-                else "${b.pending} chapters not generated yet. Open the book in Books and tap convert to continue.",
+                else "${b.pending} parts are still to be made.",
                 style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(16.dp, 8.dp, 16.dp, 0.dp))
+            if (b.pending > 0 && dev.vox.audio.reader.Converter.bookId != b.id) TextButton({ vm.continueConversion(b.id) }, Modifier.padding(horizontal = 8.dp)) { Text("Generate the rest") }
             if (vm.detailLoading) {
                 LinearProgressIndicator(Modifier.fillMaxWidth().padding(16.dp), color = VoxRed)
                 if (b.addonId == "torrent" || b.addonId == "youtube") Text(
